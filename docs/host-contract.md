@@ -94,12 +94,42 @@ return Messages. Session IDs persist and are resumed; resume failures do not sil
 conversations. A2A task records are currently in-memory and do not survive restart or unregistering.
 Loaded sessions have no idle eviction; shared-runtime failure affects all hosted agents.
 
-The bundled headless runtime must not initialize or launch standalone Copilot CLI extensions,
-even when the active Copilot profile has them installed. The host must explicitly opt out on
-every session creation and resume, including replacement sessions created by `/new-session`.
-This opt-out must not modify the user's Copilot profile or credentials, disable supported
-configuration discovery (including MCP servers, skills, and custom agent personas), or change
-the folder-trust and file-hook rules below.
+### Standalone Copilot CLI extensions
+
+On Windows ARM64, RepoYak must support explicitly approved standalone Copilot CLI extensions
+in its bundled headless runtime without modifying the user's Copilot profile. With the pinned
+.NET SDK, register an `IExtensionLaunchProviderHandler` in
+`CopilotClientOptions.ExtensionLaunchProvider` before starting the shared client. Set
+`RequestExtensions = true` and supply the matching `copilot-sdk` directory under the bundled
+runtime's native assets on every create and resume, including `/new-session`.
+
+The runtime discovers entrypoints. Return a launch profile only when the source-qualified ID,
+absolute entrypoint path, and SHA-256 digest match an operator-managed allowlist entry. Reject
+linked or redirected paths and revalidate the entry immediately before launch. Decline unapproved
+entries without launching them or failing the session, and log the decision. Approval authorizes
+the extension and its dependencies to run under the host account; it is not a filesystem sandbox
+or an interactive CLI consent prompt.
+
+Set `REPOYAK_EXTENSION_NODE` to the absolute path of the approved Node executable and
+`REPOYAK_EXTENSION_ALLOWLIST` to a file with one tab-separated ID, path, and SHA-256 entry per
+line. Without a matching approval, the provider declines the entrypoint.
+
+Launch a trusted RepoYak broker, not Node directly: the pinned runtime overlays the profile
+environment on its inherited environment. The broker starts Node by a configured absolute path,
+without a shell and with an explicitly constructed environment. Copy only `SystemRoot`, `windir`,
+`ComSpec`, `TEMP`, `TMP`, `PATHEXT`, `USERPROFILE`, `HOME`, `APPDATA`, `LOCALAPPDATA`, and the
+runtime's `COPILOT_SDK_PATH`, `SESSION_ID`, and `COPILOT_EXTENSION_PARENT_PID`, when set.
+Set `EXTENSION_PATH` from the approved entrypoint and build `PATH` from the Node directory and
+System32. Do not copy tokens, `NODE_OPTIONS`, or other host variables. Do not clear the host or
+runtime environment.
+
+Use ARM64 Node with synchronous module hook support. Pass the trusted resolver preload as a
+`file:` URL and resolve `@github/copilot-sdk` and `@github/copilot-sdk/extension` to `index.js` and
+`extension.js` in the matching bundled SDK. Preserve stdin and stdout for the extension protocol,
+relay diagnostics on stderr, and propagate the child exit code. Use a Windows kill-on-close Job
+Object or equivalent ownership so stopping the broker also terminates Node and its descendants.
+MCP discovery, folder trust, skills, personas, and repository file-hook rules are unchanged.
+RepoYak does not promise CLI UI or consent bridging through A2A.
 
 ## Trust boundary
 
@@ -132,20 +162,20 @@ streaming, progress events, cancellation, and optional personas. Tests do not cl
 conformance or validate every model/runtime capability. Real runtime checks require an authenticated
 Copilot account and disposable workspaces; normal CI does not invoke inference.
 
-### Headless session regression cases
+### Headless extension regression cases
 
-Use an authenticated disposable Copilot profile, a disposable Git repository, and an isolated
-RepoYak host config on an unused loopback port. For the extension cases, install an enabled,
-benign standalone CLI extension with an observable launch marker in that profile. Use
-JSON-RPC `SendMessage` on `/agents/{id}/a2a` for the work requests below.
+Use an authenticated disposable profile, isolated host configuration, disposable Git fixture,
+and an unused loopback port. Install a benign Node extension with an invocation marker and a tool
+that returns a known value. Install a second extension that records whether it starts; do not
+allowlist it. Keep a synthetic environment canary set in the host for the tests.
 
-| Case | Action | Expected result |
-|---|---|---|
-| First session | With the extension installed, ask a newly registered agent to reply exactly `OK` without using tools. | The task reaches `TASK_STATE_COMPLETED` with an `OK` result artifact. The extension launch marker is absent. |
-| Resume | Stop and restart only the disposable host with the same config and persisted state; send the same request to the same agent. | The saved session ID is resumed, not replaced. The task completes with `OK` and the extension is not launched. |
-| Explicit reset | Send `/new-session` to the same agent, then send the `OK` request again. | The reset returns a Message and creates a different session ID. The next task completes with `OK` and the extension is not launched. |
-| Supported discovery | With the standalone extension still installed, use a trusted fixture repository with a benign MCP server, skill, and named custom agent persona; verify they are discoverable and usable. Repeat the MCP discovery check with the same fixture untrusted. | Supported discovery still works in the trusted fixture. Registration does not make the untrusted repository's MCP server available. |
-| No standalone extensions | Repeat the first-session test with no standalone extensions installed. | The task still completes with `OK`. |
+| Case | Expected result |
+|---|---|
+| First A2A request | `SendMessage` to `/agents/{id}/a2a` invokes the approved tool and returns `TASK_STATE_COMPLETED` with its value. Startup records native ARM64 and no inherited canary; the required protocol variables still work. |
+| Rejection | The unapproved extension is discovered and declined, its launch marker is absent, and the task still completes. A mismatched ID, path, or digest cannot approve a launch. |
+| Restart and reset | After restart with the same host state, the approved tool runs in the saved session. `/new-session` creates a different session ID, and the tool still works. |
+| Extension reload | SDK reload restarts the approved extension. Its tool can be invoked again without inheriting the canary. |
+| Compatibility | An `OK`-only request completes against a normal repository registration with an unapproved profile extension present. Existing discovery and trust settings are retained. Run the full suite, including focused allowlist and child-environment checks. |
 
 The source repository is public at
 [spec-works/RepoYak](https://github.com/spec-works/RepoYak). Hosting under Spec-Works
