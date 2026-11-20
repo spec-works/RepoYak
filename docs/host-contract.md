@@ -2,7 +2,7 @@
 
 RepoYak is a Spec-Works project providing an agent host over workspace knowledge, skills,
 instructions, and the Microsoft Copilot SDK (currently packaged as `GitHub.Copilot.SDK`).
-This document describes the current 0.2 implementation,
+This document defines the expected behavior of the 0.2 host,
 not an independent replacement for the underlying protocol specifications.
 
 ## Specification boundaries
@@ -94,6 +94,13 @@ return Messages. Session IDs persist and are resumed; resume failures do not sil
 conversations. A2A task records are currently in-memory and do not survive restart or unregistering.
 Loaded sessions have no idle eviction; shared-runtime failure affects all hosted agents.
 
+The bundled headless runtime must not initialize or launch standalone Copilot CLI extensions,
+even when the active Copilot profile has them installed. The host must explicitly opt out on
+every session creation and resume, including replacement sessions created by `/new-session`.
+This opt-out must not modify the user's Copilot profile or credentials, disable supported
+configuration discovery (including MCP servers, skills, and custom agent personas), or change
+the folder-trust and file-hook rules below.
+
 ## Trust boundary
 
 The server binds to loopback. A2A is unauthenticated and editing/command permissions are automatically
@@ -124,6 +131,21 @@ The test suite covers registry persistence, ID/CLI validation, per-agent task is
 streaming, progress events, cancellation, and optional personas. Tests do not claim full A2A
 conformance or validate every model/runtime capability. Real runtime checks require an authenticated
 Copilot account and disposable workspaces; normal CI does not invoke inference.
+
+### Headless session regression cases
+
+Use an authenticated disposable Copilot profile, a disposable Git repository, and an isolated
+RepoYak host config on an unused loopback port. For the extension cases, install an enabled,
+benign standalone CLI extension with an observable launch marker in that profile. Use
+JSON-RPC `SendMessage` on `/agents/{id}/a2a` for the work requests below.
+
+| Case | Action | Expected result |
+|---|---|---|
+| First session | With the extension installed, ask a newly registered agent to reply exactly `OK` without using tools. | The task reaches `TASK_STATE_COMPLETED` with an `OK` result artifact. The extension launch marker is absent. |
+| Resume | Stop and restart only the disposable host with the same config and persisted state; send the same request to the same agent. | The saved session ID is resumed, not replaced. The task completes with `OK` and the extension is not launched. |
+| Explicit reset | Send `/new-session` to the same agent, then send the `OK` request again. | The reset returns a Message and creates a different session ID. The next task completes with `OK` and the extension is not launched. |
+| Supported discovery | With the standalone extension still installed, use a trusted fixture repository with a benign MCP server, skill, and named custom agent persona; verify they are discoverable and usable. Repeat the MCP discovery check with the same fixture untrusted. | Supported discovery still works in the trusted fixture. Registration does not make the untrusted repository's MCP server available. |
+| No standalone extensions | Repeat the first-session test with no standalone extensions installed. | The task still completes with `OK`. |
 
 The source repository is public at
 [spec-works/RepoYak](https://github.com/spec-works/RepoYak). Hosting under Spec-Works
