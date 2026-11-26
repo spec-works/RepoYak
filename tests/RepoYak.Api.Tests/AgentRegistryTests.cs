@@ -9,6 +9,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Hosting;
 using System.IO.Pipes;
+using SpecWorks.AiCatalog.Parsing;
+using SpecWorks.AiCatalog.Serialization;
+using SpecWorks.AiCatalog.Validation;
 
 namespace RepoYak.Api.Tests;
 
@@ -80,11 +83,13 @@ public sealed class AgentRegistryTests : IAsyncLifetime
     {
         var registry = CreateRegistry();
         await registry.StartAsync(CancellationToken.None);
+        var identifier = Assert.Single(registry.Catalog().Entries).Identifier;
         var runtime = _runtimes["portfolio"];
         var handler = registry.GetHandler("portfolio");
         await handler.SendMessageAsync(Request("remember", "caller"), CancellationToken.None);
         var view = await registry.AddAsync(new(InitialWorkspace, Catalog: "support"), CancellationToken.None);
         Assert.Equal(new[] { "default", "support" }, view.Catalogs);
+        Assert.Equal(identifier, Assert.Single(registry.Catalog("support").Entries).Identifier);
         Assert.Same(runtime, _runtimes["portfolio"]);
         Assert.Same(handler, registry.GetHandler("portfolio"));
         Assert.Single(runtime.History);
@@ -99,6 +104,7 @@ public sealed class AgentRegistryTests : IAsyncLifetime
         await restarted.StartAsync(CancellationToken.None);
         Assert.Empty(restarted.List("default"));
         Assert.Equal("portfolio", Assert.Single(restarted.List("support")).Id);
+        Assert.Equal(identifier, Assert.Single(restarted.Catalog("support").Entries).Identifier);
         await restarted.RemoveAsync("portfolio", CancellationToken.None, "support");
         Assert.Empty(restarted.List("support"));
         Assert.Single(restarted.List());
@@ -160,6 +166,7 @@ public sealed class AgentRegistryTests : IAsyncLifetime
         using var saved = JsonDocument.Parse(await File.ReadAllTextAsync(path));
         Assert.Equal(hostId, saved.RootElement.GetProperty("hostId").GetString());
         Assert.Equal("portfolio", saved.RootElement.GetProperty("catalogs").GetProperty("default")[0].GetString());
+        Assert.Equal($"urn:air:{hostId}.localhost:portfolio", Assert.Single(registry.Catalog().Entries).Identifier);
         Assert.Single(registry.List("default"));
     }
 
@@ -263,11 +270,15 @@ public sealed class AgentRegistryTests : IAsyncLifetime
         await first.StartAsync(CancellationToken.None);
         Assert.Empty(first.List());
         Assert.True(File.Exists(Path.Combine(StateDirectory, "agents.json")));
-        var originalCatalog = JsonSerializer.Serialize(first.Catalog());
+        var originalCatalog = AiCatalogSerializer.Serialize(first.Catalog());
+        var parsed = AiCatalogParser.Parse(originalCatalog);
+        Assert.Empty(parsed.Entries);
+        Assert.Equal("0.9", parsed.SpecVersion);
+        Assert.True(AiCatalogValidator.Validate(parsed, ConformanceLevel.Discoverable).IsValid);
         await first.DisposeAsync();
         var second = NewRegistry();
         await second.StartAsync(CancellationToken.None);
-        Assert.Equal(originalCatalog, JsonSerializer.Serialize(second.Catalog()));
+        Assert.Equal(originalCatalog, AiCatalogSerializer.Serialize(second.Catalog()));
         await second.AddAsync(new(InitialWorkspace), CancellationToken.None);
         await second.DisposeAsync();
         var third = NewRegistry();
@@ -320,21 +331,48 @@ public sealed class AgentRegistryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RebrandingPreservesLegacyManagementAndCatalogIdentifiers()
+    public async Task AgentIdentifiersUseAirWhileLegacyManagementAndHostIdentifiersArePreserved()
     {
         Assert.Matches(OperatingSystem.IsWindows()
             ? "^agentdock-[0-9A-F]{16}-5080$" : "^agentdock-[0-9A-F]{16}$",
             AgentAdmin.PipeName(5080));
         var registry = CreateRegistry();
         await registry.StartAsync(CancellationToken.None);
-        using var catalog = JsonDocument.Parse(JsonSerializer.Serialize(registry.Catalog()));
+        using var catalog = JsonDocument.Parse(AiCatalogSerializer.Serialize(registry.Catalog()));
         var host = catalog.RootElement.GetProperty("host");
         Assert.Equal("RepoYak", host.GetProperty("displayName").GetString());
         var hostId = host.GetProperty("identifier").GetString()!;
         Assert.StartsWith("urn:agentdock:host:", hostId);
         var entry = Assert.Single(catalog.RootElement.GetProperty("entries").EnumerateArray());
-        Assert.Equal($"urn:agentdock:{hostId["urn:agentdock:host:".Length..]}:agent:portfolio",
+        Assert.Equal($"urn:air:{hostId["urn:agentdock:host:".Length..]}.localhost:portfolio",
             entry.GetProperty("identifier").GetString());
+    }
+
+    [Fact]
+    public async Task AirAgentIdentifiersAreHostScopedAndIndependentOfServingAddress()
+    {
+        var first = CreateRegistry();
+        await first.StartAsync(CancellationToken.None);
+        var firstIdentifier = Assert.Single(first.Catalog().Entries).Identifier;
+        var otherState = Path.Combine(_root, "other-state");
+        AgentRegistry OtherHost(string baseUrl)
+        {
+            var registry = new AgentRegistry(InitialWorkspace, otherState, [], baseUrl,
+                (registration, _) => new FakeRuntime(registration.Id, false), NullLoggerFactory.Instance);
+            _registries.Add(registry);
+            return registry;
+        }
+        var second = OtherHost("http://127.0.0.1:5080");
+        await second.StartAsync(CancellationToken.None);
+        var secondEntry = Assert.Single(second.Catalog().Entries);
+        Assert.Matches("^urn:air:[0-9a-f]{32}\\.localhost:portfolio$", secondEntry.Identifier);
+        Assert.NotEqual(firstIdentifier, secondEntry.Identifier);
+        await second.DisposeAsync();
+        var restarted = OtherHost("http://localhost:5081");
+        await restarted.StartAsync(CancellationToken.None);
+        var restartedEntry = Assert.Single(restarted.Catalog().Entries);
+        Assert.Equal(secondEntry.Identifier, restartedEntry.Identifier);
+        Assert.NotEqual(secondEntry.Url, restartedEntry.Url);
     }
 
     [Fact]
@@ -346,7 +384,7 @@ public sealed class AgentRegistryTests : IAsyncLifetime
         Assert.Equal("failed", failed.Status);
         Assert.Contains("Simulated startup failure", failed.Error);
         Assert.Equal(503, Assert.Throws<AgentRegistryException>(() => registry.GetHandler("broken")).StatusCode);
-        using var catalog = JsonDocument.Parse(JsonSerializer.Serialize(registry.Catalog()));
+        using var catalog = JsonDocument.Parse(AiCatalogSerializer.Serialize(registry.Catalog()));
         Assert.Single(catalog.RootElement.GetProperty("entries").EnumerateArray());
         Assert.True(_runtimes["broken"].Disposed);
     }
@@ -419,6 +457,11 @@ public sealed class AgentRegistryTests : IAsyncLifetime
             Assert.Equal(restTaskId, (await restClient.GetTaskAsync(new GetTaskRequest { Id = restTaskId }, CancellationToken.None)).Id);
             var catalog = await http.GetAsync("/catalog");
             Assert.Equal("application/ai-catalog+json", catalog.Content.Headers.ContentType?.MediaType);
+            var defaultText = await catalog.Content.ReadAsStringAsync();
+            var defaultCatalog = AiCatalogParser.Parse(defaultText);
+            Assert.True(AiCatalogValidator.Validate(defaultCatalog, ConformanceLevel.Discoverable).IsValid);
+            Assert.Equal(new[] { "dynamic", "portfolio" }, defaultCatalog.Entries.Select(entry => entry.Tags![0]));
+            Assert.Equal(defaultText, await http.GetStringAsync("/catalogs/default"));
             await registry.AddAsync(new(Path.Combine(_root, "Dynamic"), Catalog: "support"), CancellationToken.None);
             await registry.AddAsync(new(Path.Combine(_root, "Dynamic"), Catalog: "engineering"), CancellationToken.None);
             foreach (var name in new[] { "support", "engineering" })
@@ -426,7 +469,19 @@ public sealed class AgentRegistryTests : IAsyncLifetime
                 var named = await http.GetAsync("/catalogs/" + name);
                 Assert.Equal("application/ai-catalog+json", named.Content.Headers.ContentType?.MediaType);
                 using var namedJson = JsonDocument.Parse(await named.Content.ReadAsStringAsync());
+                Assert.Equal("0.9", namedJson.RootElement.GetProperty("specVersion").GetString());
+                var parsedCatalog = AiCatalogParser.Parse(namedJson.RootElement.GetRawText());
+                Assert.True(AiCatalogValidator.Validate(parsedCatalog, ConformanceLevel.Discoverable).IsValid);
                 var entry = Assert.Single(namedJson.RootElement.GetProperty("entries").EnumerateArray());
+                Assert.Equal(defaultCatalog.Entries.Single(item => item.Tags![0] == "dynamic").Identifier,
+                    entry.GetProperty("identifier").GetString());
+                Assert.Matches("^urn:air:[0-9a-f]{32}\\.localhost:dynamic$", entry.GetProperty("identifier").GetString()!);
+                Assert.Equal("application/a2a-agent-card+json", entry.GetProperty("type").GetString());
+                Assert.Equal("Dynamic", entry.GetProperty("displayName").GetString());
+                Assert.Equal("Knowledge for Dynamic.", entry.GetProperty("description").GetString());
+                Assert.False(entry.TryGetProperty("mediaType", out _));
+                Assert.False(entry.TryGetProperty("data", out _));
+                Assert.False(entry.TryGetProperty("trustManifests", out _));
                 Assert.EndsWith("/agents/dynamic/.well-known/agent-card.json", entry.GetProperty("url").GetString());
             }
             Assert.Equal(HttpStatusCode.NotFound, (await http.GetAsync("/catalogs/missing")).StatusCode);

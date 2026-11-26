@@ -29,6 +29,7 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
     <PackageReference Include="A2A.AspNetCore" Version="1.0.0-preview3" />
     <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.28" />
+    <PackageReference Include="SpecWorks.AiCatalog" Version="0.7.0" />
     <Content Include="..\..\skills\repoyak-cli\SKILL.md"
              Pack="false"
              Link="skills\repoyak-cli\SKILL.md"

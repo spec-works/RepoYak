@@ -143,6 +143,10 @@ new `repoyak` executable rather than uninstalling a .NET tool.
 
 Saved registrations, catalog memberships, and Copilot session references remain in their
 existing locations. The legacy `AgentDock` state directory, management pipe names,
-`urn:agentdock:` identifiers, `REPOSITORY_AGENT_*`, and `REPOAGENT_*` environment variables
+catalog host `urn:agentdock:host:` identifiers, `REPOSITORY_AGENT_*`, and `REPOAGENT_*` environment variables
 are intentionally unchanged. No `rahcli` alias is installed. The plugin/skill names also change
 to `repoyak`/`repoyak-cli`; replace old consumer installations explicitly.
+
+Agent catalog entries now use `urn:air:{hostId}.localhost:{agentId}` without a kind suffix,
+replacing `urn:agentdock:{hostId}:agent:{agentId}`. Refresh cached catalogs and stored entry
+references after upgrading. Registration IDs, card routes, and saved runtime sessions are unchanged.

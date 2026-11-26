@@ -1,5 +1,6 @@
 using A2A;
 using A2A.AspNetCore;
+using SpecWorks.AiCatalog.Serialization;
 
 namespace RepoYak.Api;
 
@@ -21,9 +22,10 @@ public static class AgentEndpoints
             }
         });
         app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
-        app.MapGet("/catalog", () => Results.Json(registry.Catalog(), contentType: "application/ai-catalog+json"));
+        app.MapGet("/catalog", () => Results.Text(AiCatalogSerializer.Serialize(registry.Catalog()),
+            contentType: "application/ai-catalog+json"));
         app.MapGet("/catalogs/{name}", (string name) =>
-            Results.Json(registry.Catalog(name), contentType: "application/ai-catalog+json"));
+            Results.Text(AiCatalogSerializer.Serialize(registry.Catalog(name)), contentType: "application/ai-catalog+json"));
         IResult Card(string agentId) => Results.Json(registry.GetCard(agentId),
             A2AJsonUtilities.DefaultOptions, contentType: "application/a2a-agent-card+json");
         app.MapGet("/agents/{agentId}/.well-known/agent-card.json", Card);

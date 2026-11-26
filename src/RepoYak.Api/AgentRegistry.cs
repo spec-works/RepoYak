@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using A2A;
+using SpecWorks.AiCatalog.Models;
+using SpecWorks.AiCatalog.Validation;
+using CatalogDocument = SpecWorks.AiCatalog.Models.AiCatalog;
 
 namespace RepoYak.Api;
 
@@ -154,24 +157,29 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
             : throw new AgentRegistryException(404, $"Catalog '{name}' does not exist.");
     }
 
-    public object Catalog(string name = "default")
+    public CatalogDocument Catalog(string name = "default")
     {
         var members = RequireCatalog(name);
-        return new
+        var catalog = new CatalogDocument
         {
-            specVersion = "1.0",
-            host = new { identifier = $"urn:agentdock:host:{_hostId}", displayName = "RepoYak" },
-            entries = _agents.Values.Where(a => a.Status == "ready" && members.Contains(a.Registration.Id))
-                .OrderBy(a => a.Registration.Id).Select(a => new
+            SpecVersion = "0.9",
+            Host = new HostInfo { Identifier = $"urn:agentdock:host:{_hostId}", DisplayName = "RepoYak" },
+            Entries = _agents.Values.Where(a => a.Status == "ready" && members.Contains(a.Registration.Id))
+                .OrderBy(a => a.Registration.Id).Select(a => new CatalogEntry
                 {
-                    identifier = $"urn:agentdock:{_hostId}:agent:{a.Registration.Id}",
-                    displayName = a.Card!.Name,
-                    description = a.Card.Description,
-                    type = "application/a2a-agent-card+json",
-                    tags = new[] { a.Registration.Id, "agent", "knowledge", "skills", "tools" },
-                    url = View(a).CardUrl
-                }).ToArray()
+                    Identifier = $"urn:air:{_hostId}.localhost:{a.Registration.Id}",
+                    DisplayName = a.Card!.Name,
+                    Description = a.Card.Description,
+                    Type = "application/a2a-agent-card+json",
+                    Tags = [a.Registration.Id, "agent", "knowledge", "skills", "tools"],
+                    Url = View(a).CardUrl
+                }).ToList()
         };
+        if (!AiCatalogValidator.Validate(catalog, ConformanceLevel.Discoverable).IsValid)
+        {
+            throw new AgentRegistryException(500, "Generated AI Catalog failed structural validation.");
+        }
+        return catalog;
     }
 
     public async Task<AgentRegistrationView> AddAsync(RegisterAgentRequest request, CancellationToken cancellationToken)

@@ -180,8 +180,9 @@ rejected; supply `--id` to distinguish repositories with the same folder name. A
 Copilot session ID.
 
 Registrations persist under `%LOCALAPPDATA%\AgentDock\hosts\port-5080\agents.json` by default.
-The legacy `AgentDock` state directory, management pipe prefix, and catalog URNs are intentionally
-retained for compatibility. Renaming does not move saved sessions or create new agent identities.
+The legacy `AgentDock` state directory, management pipe prefix, and catalog host URN are intentionally
+retained for compatibility. Renaming does not move saved sessions or create new runtime identities.
+Agent catalog identifiers now use `urn:air:{hostId}.localhost:{agentId}` as described below.
 Existing `REPOSITORY_AGENT_PORT` and `REPOAGENT_*` configuration names remain supported.
 The executable/package rename does not provide a `rahcli` alias. When moving from the old .NET
 tool, stop the host before uninstalling `SpecWorks.RepoAgentHost.Cli` and installing
@@ -326,6 +327,19 @@ result artifact; streaming does not yet emit token-by-token artifact deltas.
 `application/a2a-agent-card+json`, pointing to each available agent's card. Entries are generated
 from the live registry, not a separately maintained list. Catalog identifiers include a durable
 host identity plus the friendly agent ID, so IDs from separate hosts do not collide.
+
+Agent entries use `urn:air:{hostId}.localhost:{agentId}`, for example
+`urn:air:0123456789abcdef0123456789abcdef.localhost:portfolio`. There is no kind suffix.
+The local publisher segment derives from the persisted host ID, not the serving address or port;
+identifiers remain stable across restarts and catalogs. This is a local discovery identity, not
+proof of a public publisher's ownership. It replaces `urn:agentdock:{hostId}:agent:{agentId}`;
+refresh cached catalogs and stored entry references. Registration IDs, card URLs, sessions, and
+the catalog host identifier are unchanged.
+
+RepoYak uses the `SpecWorks.AiCatalog` 0.7.0 library for typed catalog models, structural validation,
+and JSON serialization. Documents declare `specVersion: "0.9"` (replacing the earlier `"1.0"`
+label); routes and memberships are unchanged. Optional null fields are omitted.
+This validates structure, not signatures or trust, and does not add catalog hosting from the library.
 
 ```powershell
 ai-catalog catalog add local-agents http://127.0.0.1:5080/catalog

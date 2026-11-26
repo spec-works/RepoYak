@@ -62,12 +62,26 @@ default temporary directory; this does not change the management commands or tru
 | `/agents/{id}/a2a` | JSON-RPC compatibility binding |
 | `GET /healthz` | Host responsiveness, not inference or persona readiness |
 
-Catalog entries point to agent cards using `application/a2a-agent-card+json`. Identifiers include
-the persisted host identity and agent ID. Cards take descriptive identity from workspace
+Catalog entries point to agent cards using `application/a2a-agent-card+json`. Agent identifiers use
+`urn:air:{hostId}.localhost:{agentId}`, with no kind suffix. The publisher segment uses the persisted
+host ID, independent of the serving address or port. It is a local discovery identity, not verified
+publisher ownership. Cards take descriptive identity from workspace
 `.agent/agent-profile.json`, then README fallback. Descriptive identity, registration ID, selected
 persona, and session ID are distinct.
 An agent in several catalogs has the same identifier, card URL, receiving session, and task store
 in each. Membership is discovery configuration, not an authorization boundary.
+
+Catalog construction uses `SpecWorks.AiCatalog` 0.7.0 models, its Discoverable-level structural
+validator, and its serializer. Responses declare `specVersion: "0.9"`, not the previous `"1.0"`;
+the entry wire field remains `type`, and optional null fields are omitted. Invalid generated
+documents are not served. Routes, membership persistence, and ordering
+are preserved. Structural validation does not perform signature/trust verification or add an
+ASP.NET hosting dependency.
+
+Agent entry identifiers replace the former `urn:agentdock:{hostId}:agent:{agentId}` format;
+clients must refresh cached catalogs and entry references. The catalog host's
+`urn:agentdock:host:{hostId}` identifier, registration IDs, configuration, and saved runtime sessions
+remain unchanged. Agent identifiers stay the same across catalogs and host restarts.
 
 Root A2A aliases exist only when an initial workspace is explicitly provided to `start` or `serve`.
 Without one, callers discover through the catalog; no default is inferred from list order.

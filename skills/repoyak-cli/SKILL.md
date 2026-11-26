@@ -258,9 +258,16 @@ ai-catalog catalog update repoyak-local
 Catalog clients cache documents; refresh after starting/stopping agents. If the name is already
 registered, update it rather than treating a failed `catalog add` as a host outage.
 
-Entries have a stable `identifier` URN including host identity and agent ID, type
+Entries have a stable `identifier` of `urn:air:{hostId}.localhost:{agentId}` (no kind suffix), type
 `application/a2a-agent-card+json`, `url` pointing to the agent card, and descriptive metadata/tags.
 Get the actual identifier from search; do not invent it from the folder name.
+The persisted host ID keeps this local publisher identity stable across restarts and serving
+address changes. It replaces the old `urn:agentdock:{hostId}:agent:{agentId}` entry format;
+refresh cached catalogs and stored entry references. Registration IDs and routes are unchanged.
+
+Catalogs declare `specVersion: "0.9"` and use the Spec-Works AI Catalog library for models,
+structural validation, and serialization. This replaces the former `"1.0"` label without changing
+routes. Structural validation is not signature/trust verification.
 
 ```powershell
 ai-catalog show "<identifier-from-search>" --scope repoyak-local --json

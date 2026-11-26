@@ -6,6 +6,8 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using SpecWorks.AiCatalog.Parsing;
+using SpecWorks.AiCatalog.Validation;
 
 if (args is not [var runtimePath, var stateDirectory, var hostPath])
 {
@@ -86,6 +88,12 @@ try
     {
         throw new InvalidOperationException("Installed host did not expose the AI Catalog media type.");
     }
+    var catalogDocument = AiCatalogParser.Parse(await catalog.Content.ReadAsStringAsync(timeout.Token));
+    if (catalogDocument.SpecVersion != "0.9"
+        || !AiCatalogValidator.Validate(catalogDocument, ConformanceLevel.Discoverable).IsValid)
+    {
+        throw new InvalidOperationException("Installed host did not expose a structurally valid AI Catalog v0.9 document.");
+    }
     Console.WriteLine("Installed RepoYak host health and catalog checks succeeded.");
 
     var workspace = Path.Combine(stateDirectory, "workspace with spaces");
@@ -93,6 +101,13 @@ try
     await File.WriteAllTextAsync(Path.Combine(workspace, "README.md"), "# Package check\n\nDisposable workspace.");
     await RunCommandAsync("add", workspace, "--id", "package-check");
     await VerifyRegistrationAsync(present: true);
+    var populatedCatalog = AiCatalogParser.Parse(await http.GetStringAsync("/catalog", timeout.Token));
+    if (!AiCatalogValidator.Validate(populatedCatalog, ConformanceLevel.Discoverable).IsValid
+        || populatedCatalog.Entries.Count != 1
+        || populatedCatalog.Entries[0].Type != "application/a2a-agent-card+json")
+    {
+        throw new InvalidOperationException("Installed host did not advertise the registered agent in a valid AI Catalog.");
+    }
     await RunCommandAsync("stop");
     await host.WaitForExitAsync(timeout.Token);
     if (host.ExitCode != 0)
