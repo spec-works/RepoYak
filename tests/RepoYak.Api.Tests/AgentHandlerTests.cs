@@ -138,7 +138,9 @@ public sealed class AgentHandlerTests
         public CancellationTokenSource? CancelOnAsk { get; init; }
 
         public async Task<string> AskAsync(string taskId, string question, CancellationToken cancellationToken,
-            Func<string, CancellationToken, Task>? reportProgress = null)
+            Func<string, CancellationToken, Task>? reportProgress = null,
+            Func<AgentInputRequest, CancellationToken, Task<AgentInputResponse>>? requestInput = null,
+            Func<AgentAuthenticationRequest, CancellationToken, Task>? requestAuthentication = null)
         {
             LastTaskId = taskId;
             CancelOnAsk?.Cancel();

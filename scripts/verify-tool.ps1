@@ -83,10 +83,15 @@ try {
             }
         }
     }
-    & $DotNetExecutable run (Join-Path $PSScriptRoot 'verify-runtime.cs') -- `
+    & $DotNetExecutable run (Join-Path $PSScriptRoot 'verify-runtime.cs') --configuration Release `
+        --artifacts-path (Join-Path $toolDirectory 'build') -p:UseSharedCompilation=false -- `
         $runtime.FullName (Join-Path $toolDirectory 'runtime-state') `
         $installedHost
     if ($LASTEXITCODE -ne 0) { throw "Bundled Copilot runtime handshake failed ($LASTEXITCODE)." }
+    & $DotNetExecutable run (Join-Path $PSScriptRoot 'verify-local-auth.cs') --configuration Release `
+        --artifacts-path (Join-Path $toolDirectory 'build') -p:UseSharedCompilation=false -- `
+        $runtime.FullName (Join-Path $toolDirectory 'oauth-state')
+    if ($LASTEXITCODE -ne 0) { throw "Bundled MCP OAuth verification failed ($LASTEXITCODE)." }
     Write-Output "Verified installed RepoYak tool and bundled runtime for $rid."
 } finally {
     for ($attempt = 1; $attempt -le 5; $attempt++) {

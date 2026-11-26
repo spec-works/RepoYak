@@ -1,9 +1,11 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using GitHub.Copilot;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.AI;
 
 namespace RepoYak.Api;
 
@@ -19,12 +21,17 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
         user's request. Do not expose credentials, secrets, or private data. Do not access files outside
         the configured workspace.
 
-        Work to ensure you are using the latest workspace content. For a Git repository, inspect
-        its working tree, current branch, and configured upstream before relying on its contents.
-        When the working tree is clean and the branch has an upstream, use git pull --ff-only to
-        update it. Do not switch branches, alter remotes, merge, rebase, stash, or discard changes
+        Work to ensure you are using the latest workspace content. Git support is conditional on
+        a .git file or directory at the configured workspace root, as reported in each request.
+        Only when Git support is enabled, inspect the working tree, current branch, and configured
+        upstream before relying on its contents. For Git-enabled workspaces, when the working tree
+        is clean and the branch has an upstream, use git pull --ff-only to update it.
+        Do not switch branches, alter remotes, merge, rebase, stash, or discard changes
         to force an update. If local changes, divergence, missing upstream, or a fetch/pull failure
         prevents updating, report that limitation and do not claim the content is current.
+        When Git support is disabled, use the current local files without assuming a branch,
+        upstream, or remote synchronization. Do not run Git commands or initialize a repository
+        in that workspace unless the user explicitly requests it.
 
         Make only changes needed for the user's request. Preserve unrelated work. Do not discard
         existing changes, perform destructive operations, change Git remotes, commit, push, or open
@@ -33,6 +40,12 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
 
         For questions, ground factual claims in workspace evidence and cite relative paths.
         Distinguish current claims from dated or exploratory material, and say when evidence is missing.
+
+        For a configured remote MCP server that needs sign-in, use authenticate_mcp. Call it without
+        serverName to inspect connection states, then with the exact configured server name when
+        that server is needed for the user's request. The host gives the caller a browser sign-in link
+        and waits for the runtime to confirm the connection. Never ask the caller to paste tokens,
+        authorization codes, or callback URLs. A chat reply is not proof of authentication.
         """;
 
     private readonly SharedCopilotRuntime _runtime;
@@ -50,6 +63,9 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
     private string? _model;
     private bool _stopped;
     private int _disposed;
+    private Func<AgentInputRequest, CancellationToken, Task<AgentInputResponse>>? _requestInput;
+    private CancellationToken _inputCancellationToken;
+    private LocalMcpAuthentication? _authentication;
 
     public CopilotAgentService(
         RepositoryKnowledge repository,
@@ -169,12 +185,17 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
     }
 
     public async Task<string> AskAsync(string taskId, string question, CancellationToken cancellationToken,
-        Func<string, CancellationToken, Task>? reportProgress = null)
+        Func<string, CancellationToken, Task>? reportProgress = null,
+        Func<AgentInputRequest, CancellationToken, Task<AgentInputResponse>>? requestInput = null,
+        Func<AgentAuthenticationRequest, CancellationToken, Task>? requestAuthentication = null)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
             ObjectDisposedException.ThrowIf(_stopped, this);
+            using var turnCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _requestInput = requestInput;
+            _inputCancellationToken = turnCancellation.Token;
             if (_session is null)
             {
                 var client = await _runtime.GetClientAsync(cancellationToken);
@@ -207,11 +228,16 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
                 }
             }
             await SelectPersonaAsync(_session, cancellationToken);
+            await using var authentication = new LocalMcpAuthentication(_session,
+                requestAuthentication ?? ((_, _) => throw new InvalidOperationException("No active A2A request can present sign-in.")),
+                turnCancellation.Token);
+            _authentication = authentication;
             var repositoryContext = _repository.BuildContext(question);
             var prompt = $"""
                 A2A task: {taskId}
                 This is a bounded work request in the agent's ongoing session. Previous tasks are history,
                 not authorization for this task.
+                Git support for the configured workspace: {(_repository.IsGitRepository ? "enabled" : "disabled")}.
                 Requested outcome:
                 {question}
 
@@ -227,7 +253,6 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
                 SingleWriter = false,
                 AllowSynchronousContinuations = false
             });
-            using var turnCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             using var subscription = _session.On<SessionEvent>(evt =>
             {
                 var text = evt switch
@@ -269,11 +294,13 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
             }
             catch (OperationCanceledException)
             {
+                await turnCancellation.CancelAsync();
                 await _session.AbortAsync(CancellationToken.None);
                 throw;
             }
             catch (TimeoutException)
             {
+                await turnCancellation.CancelAsync();
                 await _session.AbortAsync(CancellationToken.None);
                 throw;
             }
@@ -289,6 +316,8 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
         }
         finally
         {
+            _requestInput = null;
+            _authentication = null;
             _gate.Release();
         }
     }
@@ -303,6 +332,10 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
         config.EnableOnDemandInstructionDiscovery = true;
         config.EnableSkills = true;
         config.EnableFileHooks = false;
+#pragma warning disable GHCP001
+        // The bundled standalone runtime has no extension launch provider.
+        config.RequestExtensions = false;
+#pragma warning restore GHCP001
         config.SkillDirectories = _repository.SkillDirectories;
         config.AgentDirectories = _persona is null ? _repository.AgentDirectories
             : _repository.AgentDirectories.Concat(
@@ -310,10 +343,46 @@ public sealed class CopilotAgentService : IHostedAgentRuntime
                 .Distinct().ToList();
         config.EnableSessionStore = false;
         config.SkipEmbeddingRetrieval = true;
+        config.McpOAuthTokenStorage = McpOAuthTokenStorageMode.InMemory;
         config.OnPermissionRequest = PermissionHandler.ApproveAll;
+        config.Tools = [AIFunctionFactory.Create(AuthenticateMcpAsync, "authenticate_mcp",
+            "List configured MCP connection states when serverName is omitted. Provide an exact configured serverName "
+            + "to request local browser OAuth sign-in for a server needed by the current task. Never accepts tokens or callback URLs.")];
+        config.OnUserInputRequest = async (request, _) =>
+        {
+            var response = await RequestInputAsync(new AgentInputRequest(
+                "user_input", request.Question, request.Choices, request.AllowFreeform ?? true));
+            return new UserInputResponse
+            {
+                Answer = response.Answer ?? "",
+                WasFreeform = request.Choices?.Contains(response.Answer ?? "", StringComparer.Ordinal) != true
+            };
+        };
+        config.OnElicitationRequest = async request =>
+        {
+            var response = await RequestInputAsync(new AgentInputRequest(
+                "elicitation", request.Message,
+                RequestedSchema: request.RequestedSchema is null ? null : JsonSerializer.SerializeToElement(request.RequestedSchema),
+                Url: request.Url));
+            return new ElicitationResult
+            {
+#pragma warning disable GHCP001
+                Action = new GitHub.Copilot.Rpc.UIElicitationResponseAction(response.Action ?? "cancel"),
+#pragma warning restore GHCP001
+                Content = response.Content is { } content
+                    ? JsonSerializer.Deserialize<Dictionary<string, object>>(content.GetRawText()) : null
+            };
+        };
         config.Streaming = true;
         return config;
     }
+
+    private Task<AgentInputResponse> RequestInputAsync(AgentInputRequest request) =>
+        (_requestInput ?? throw new InvalidOperationException("No active A2A request can answer user input."))
+            (request, _inputCancellationToken);
+
+    private Task<string> AuthenticateMcpAsync(string? serverName = null) =>
+        (_authentication ?? throw new InvalidOperationException("No active A2A task can request sign-in.")).InvokeAsync(serverName);
 
     private async Task SelectPersonaAsync(CopilotSession session, CancellationToken cancellationToken)
     {

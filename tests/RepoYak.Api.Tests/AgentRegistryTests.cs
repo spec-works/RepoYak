@@ -286,12 +286,18 @@ public sealed class AgentRegistryTests : IAsyncLifetime
         Assert.Equal("portfolio", Assert.Single(third.List()).Id);
     }
 
-    [Fact]
-    public async Task RegistrationsPersistAndRemovedAgentsStayRemovedAfterRestart()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RegistrationsPersistAndRemovedAgentsStayRemovedAfterRestart(bool supportsGit)
     {
         var registry = CreateRegistry();
         await registry.StartAsync(CancellationToken.None);
         var secondPath = CreateWorkspace("AI Catalog");
+        if (!supportsGit)
+        {
+            Directory.Delete(Path.Combine(secondPath, ".git"));
+        }
         var view = await registry.AddAsync(new(secondPath), CancellationToken.None);
         Assert.Equal("ai-catalog", view.Id);
         Assert.Equal("ready", view.Status);
@@ -320,12 +326,18 @@ public sealed class AgentRegistryTests : IAsyncLifetime
             registry.AddAsync(new(InitialWorkspace, "duplicate-workspace"), CancellationToken.None))).StatusCode);
     }
 
-    [Fact]
-    public async Task AllowedRootsUsePathBoundaries()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AllowedRootsUsePathBoundaries(bool supportsGit)
     {
         var registry = CreateRegistry([InitialWorkspace]);
         await registry.StartAsync(CancellationToken.None);
         var outside = CreateWorkspace("Portfolio-other");
+        if (!supportsGit)
+        {
+            Directory.Delete(Path.Combine(outside, ".git"));
+        }
         Assert.Equal(403, (await Assert.ThrowsAsync<AgentRegistryException>(() =>
             registry.AddAsync(new(outside), CancellationToken.None))).StatusCode);
     }
@@ -690,7 +702,9 @@ public sealed class AgentRegistryTests : IAsyncLifetime
             return ValueTask.CompletedTask;
         }
         public async Task<string> AskAsync(string taskId, string question, CancellationToken cancellationToken,
-            Func<string, CancellationToken, Task>? reportProgress = null)
+            Func<string, CancellationToken, Task>? reportProgress = null,
+            Func<AgentInputRequest, CancellationToken, Task<AgentInputResponse>>? requestInput = null,
+            Func<AgentAuthenticationRequest, CancellationToken, Task>? requestAuthentication = null)
         {
             History.Add(question);
             Entered.TrySetResult();

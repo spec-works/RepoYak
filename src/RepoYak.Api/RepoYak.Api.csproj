@@ -7,7 +7,7 @@
     <AssemblyName>repoyak</AssemblyName>
     <Version>0.2.0-preview.4</Version>
     <Product>RepoYak</Product>
-    <Description>RepoYak by Spec-Works turns local Git repositories into A2A agents with AI Catalog discovery.</Description>
+    <Description>RepoYak by Spec-Works turns local folders into A2A agents with AI Catalog discovery and optional Git support.</Description>
     <RepositoryUrl>https://github.com/spec-works/RepoYak</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

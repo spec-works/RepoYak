@@ -6,7 +6,7 @@ public sealed class RepositoryKnowledgeTests : IDisposable
 
     public RepositoryKnowledgeTests()
     {
-        Directory.CreateDirectory(Path.Combine(_root, ".git"));
+        Directory.CreateDirectory(_root);
     }
 
     [Fact]
@@ -91,19 +91,38 @@ public sealed class RepositoryKnowledgeTests : IDisposable
     }
 
     [Fact]
-    public void Constructor_RejectsDirectoriesThatAreNotGitRepositories()
+    public void PlainFoldersSupportKnowledgeWithoutGitMetadata()
     {
-        var nonRepository = Path.Combine(Path.GetTempPath(), $"not-a-repository-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(nonRepository);
+        CreateFile("README.md", "# IANA workspace\n\nMedia type registration reviews.\n");
+        var repository = new RepositoryKnowledge(_root);
 
-        try
-        {
-            Assert.Throws<InvalidOperationException>(() => new RepositoryKnowledge(nonRepository));
-        }
-        finally
-        {
-            Directory.Delete(nonRepository, recursive: true);
-        }
+        Assert.False(repository.IsGitRepository);
+        Assert.Equal("IANA workspace", repository.Identity.Name);
+        Assert.Contains("Media type registration reviews.", repository.BuildContext("registration"));
+    }
+
+    [Fact]
+    public void GitSupportTracksMetadataAddedAndRemovedAfterRegistration()
+    {
+        var repository = new RepositoryKnowledge(_root);
+        var gitPath = Path.Combine(_root, ".git");
+        Assert.False(repository.IsGitRepository);
+
+        Directory.CreateDirectory(gitPath);
+        Assert.True(repository.IsGitRepository);
+        Directory.Delete(gitPath);
+        Assert.False(repository.IsGitRepository);
+
+        File.WriteAllText(gitPath, "gitdir: elsewhere");
+        Assert.True(repository.IsGitRepository);
+        File.Delete(gitPath);
+        Assert.False(repository.IsGitRepository);
+    }
+
+    [Fact]
+    public void ConstructorStillRejectsMissingFolders()
+    {
+        Assert.Throws<DirectoryNotFoundException>(() => new RepositoryKnowledge(Path.Combine(_root, "missing")));
     }
 
     public void Dispose()

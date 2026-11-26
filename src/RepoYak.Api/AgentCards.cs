@@ -25,8 +25,8 @@ public static class AgentCards
             }
         ],
         Capabilities = new AgentCapabilities { Streaming = true },
-        DefaultInputModes = ["text/plain"],
-        DefaultOutputModes = ["text/plain"],
+        DefaultInputModes = ["text/plain", "application/json"],
+        DefaultOutputModes = ["text/plain", "application/json"],
         Skills =
         [
             new AgentSkill
@@ -35,8 +35,8 @@ public static class AgentCards
                 Name = identity.Name,
                 Description = "An agentic assistant grounded in this workspace's knowledge, instructions, and skills.",
                 Tags = ["agent", "knowledge", "skills", "tools"],
-                InputModes = ["text/plain"],
-                OutputModes = ["text/plain"]
+                InputModes = ["text/plain", "application/json"],
+                OutputModes = ["text/plain", "application/json"]
             }
         ]
     };
