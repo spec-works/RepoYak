@@ -49,7 +49,7 @@ From the repository root, using PowerShell 7:
 .\scripts\pack-plugin.ps1
 ```
 
-The output is `artifacts\plugins\repoyak-0.2.0-preview.4.zip` (version from `plugin.json`). It contains only
+The output is `artifacts\plugins\repoyak-0.2.0-preview.5.zip` (version from `plugin.json`). It contains only
 the manifest, skill, license, and this installation guide as its root README, not the source
 checkout or native runtime binaries. Extract into a directory before using a directory-based
 installer. No symlinks or external package paths are needed.

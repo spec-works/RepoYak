@@ -52,7 +52,7 @@ no separate .NET runtime or Copilot executable is required after installation.
 Install the RepoYak preview from NuGet.org after its release workflow completes:
 
 ```powershell
-dotnet tool install --global SpecWorks.RepoYak.Cli --version 0.2.0-preview.4
+dotnet tool install --global SpecWorks.RepoYak.Cli --version 0.2.0-preview.5
 repoyak start
 ```
 
@@ -60,8 +60,8 @@ To build and install from an authorized local checkout:
 
 ```powershell
 dotnet pack .\src\RepoYak.Api\RepoYak.Api.csproj -c Release `
-  -p:Version=0.2.0-preview.4 --output .\artifacts\packages
-dotnet tool install --global SpecWorks.RepoYak.Cli --version 0.2.0-preview.4 `
+  -p:Version=0.2.0-preview.5 --output .\artifacts\packages
+dotnet tool install --global SpecWorks.RepoYak.Cli --version 0.2.0-preview.5 `
   --add-source .\artifacts\packages
 repoyak --version
 repoyak start

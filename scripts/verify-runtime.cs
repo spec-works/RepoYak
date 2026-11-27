@@ -102,6 +102,41 @@ await using (var client = new CopilotClient(new CopilotClientOptions
     Console.WriteLine("Packaged SDK elicitation callback succeeded without inference.");
 }
 
+var extensionProfile = Path.Combine(stateDirectory, "extension-profile");
+Directory.CreateDirectory(extensionProfile);
+await File.WriteAllTextAsync(Path.Combine(extensionProfile, "settings.json"), """{"experimental":true}""");
+await File.WriteAllTextAsync(Path.Combine(extensionProfile, "config.json"), "{}");
+await using (var extensionClient = new CopilotClient(new CopilotClientOptions
+{
+    Mode = CopilotClientMode.Empty, BaseDirectory = extensionProfile, UseLoggedInUser = false,
+    Connection = RuntimeConnection.ForStdio(path: runtimePath)
+}))
+{
+    await extensionClient.StartAsync(timeout.Token);
+    SessionConfig ConfigureExtensions(bool requested) => new()
+    {
+        AvailableTools = [], OnPermissionRequest = PermissionHandler.ApproveAll,
+        WorkingDirectory = extensionProfile, EnableConfigDiscovery = false, EnableExperimentalMode = true,
+#pragma warning disable GHCP001
+        RequestExtensions = requested
+#pragma warning restore GHCP001
+    };
+    var rejectedExtensions = false;
+    try
+    {
+        await using var unsupported = await extensionClient.CreateSessionAsync(ConfigureExtensions(true), timeout.Token);
+    }
+    catch (Exception exception) when (exception.ToString().Contains(
+        "extensionSdkPath is required when standalone extensions are requested", StringComparison.Ordinal))
+    {
+        rejectedExtensions = true;
+    }
+    if (!rejectedExtensions)
+        throw new InvalidOperationException("The standalone-extension regression scenario was not reproduced.");
+    await using var supported = await extensionClient.CreateSessionAsync(ConfigureExtensions(false), timeout.Token);
+    Console.WriteLine("Standalone extension initialization failure reproduced and avoided with extensions disabled, without inference.");
+}
+
 using var listener = new TcpListener(IPAddress.Loopback, 0);
 listener.Start();
 var port = ((IPEndPoint)listener.LocalEndpoint).Port;

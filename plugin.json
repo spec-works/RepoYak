@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "repoyak",
-  "version": "0.2.0-preview.4",
+  "version": "0.2.0-preview.5",
   "description": "RepoYak by Spec-Works: turn local folders into A2A agents with optional Git support, discover them through AI Catalog, and delegate tracked work.",
   "author": {
     "name": "Darrel Miller",

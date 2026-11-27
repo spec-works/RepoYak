@@ -25,8 +25,8 @@ From the repository root in PowerShell:
 ```powershell
 dotnet test .\RepoYak.sln -c Release
 dotnet pack .\src\RepoYak.Api\RepoYak.Api.csproj -c Release `
-  -p:Version=0.2.0-preview.4 --output .\artifacts\packages
-.\scripts\verify-tool.ps1 -PackageDirectory .\artifacts\packages -Version 0.2.0-preview.4
+  -p:Version=0.2.0-preview.5 --output .\artifacts\packages
+.\scripts\verify-tool.ps1 -PackageDirectory .\artifacts\packages -Version 0.2.0-preview.5
 ```
 
 The verification script checks the matching package's required assets, installs the manifest
@@ -34,6 +34,9 @@ into a disposable tool directory, and exercises `repoyak --version` and `--help`
 starts the installed Copilot runtime through the SDK and checks a RPC ping without running tools
 or invoking a model for the ping. It also invokes `ask_user` directly through the SDK to verify
 both user-input and structured elicitation callbacks without model inference.
+It also reproduces the standalone extension-initializer failure in an isolated experimental
+profile and verifies that `RequestExtensions = false` avoids it. This checks native initialization,
+not authenticated inference or saved-session resume.
 It uses isolated runtime state and disables logged-in
 user authentication. It does not alter the real RepoYak host, registrations, or conversations.
 It also launches the installed host on a temporary loopback port with a new registry, checks health
@@ -50,9 +53,9 @@ host deliberately rejects workspace paths through symlinks. From the repository 
 export TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)/"
 dotnet test RepoYak.sln -c Release
 dotnet pack src/RepoYak.Api/RepoYak.Api.csproj -c Release \
-  -p:Version=0.2.0-preview.4 --output artifacts/packages
+  -p:Version=0.2.0-preview.5 --output artifacts/packages
 pwsh -File scripts/verify-tool.ps1 \
-  -PackageDirectory artifacts/packages -Version 0.2.0-preview.4
+  -PackageDirectory artifacts/packages -Version 0.2.0-preview.5
 ```
 
 Use a native ARM64 SDK for `osx-arm64` or a native x64 SDK for `osx-x64`. The verifier checks
@@ -65,7 +68,7 @@ Use a matching-architecture SDK: .NET 10's manifest selection can follow the ins
 even when `--arch` is supplied. For example, on Windows ARM64 with an x64 SDK installed:
 
 ```powershell
-.\scripts\verify-tool.ps1 -PackageDirectory .\artifacts\packages -Version 0.2.0-preview.4 `
+.\scripts\verify-tool.ps1 -PackageDirectory .\artifacts\packages -Version 0.2.0-preview.5 `
   -RuntimeIdentifier win-x64 -DotNetExecutable "C:\Program Files\dotnet\x64\dotnet.exe"
 ```
 
@@ -119,7 +122,7 @@ After publication, stop the host before updating its installed files:
 
 ```powershell
 repoyak stop
-dotnet tool update --global SpecWorks.RepoYak.Cli --version 0.2.0-preview.4
+dotnet tool update --global SpecWorks.RepoYak.Cli --version 0.2.0-preview.5
 ```
 
 `repoyak stop` shuts down the host and preserves registrations. Ctrl+C also stops a foreground
