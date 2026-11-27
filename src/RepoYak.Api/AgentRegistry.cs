@@ -25,10 +25,17 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
     private readonly int? _port;
     private volatile Dictionary<string, string[]> _catalogs = new(StringComparer.Ordinal);
     private bool _stopped;
+    private readonly bool? _persistentTasksOverride;
+    private readonly string? _sessionModeOverride;
+    private bool _persistentTasks = true;
+    private string _defaultSessionMode = "single";
+    private readonly TaskHistoryHealth _historyHealth = new();
+    private string HistoryPath => Path.Combine(_stateDirectory, "history.db");
 
     public AgentRegistry(string? initialWorkspace, string stateDirectory, IEnumerable<string> allowedRoots,
         string baseUrl, Func<AgentRegistration, RepositoryKnowledge, IHostedAgentRuntime> factory,
-        ILoggerFactory loggerFactory, string? configPath = null, int? port = null)
+        ILoggerFactory loggerFactory, string? configPath = null, int? port = null,
+        bool? persistentTasks = null, string? defaultSessionMode = null)
     {
         _initialWorkspace = initialWorkspace is null ? null : NormalizePath(initialWorkspace);
         _stateDirectory = Path.GetFullPath(stateDirectory);
@@ -39,6 +46,8 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
         _logger = loggerFactory.CreateLogger<AgentRegistry>();
         _statePath = configPath is null ? Path.Combine(_stateDirectory, "agents.json") : Path.GetFullPath(configPath);
         _port = port;
+        _persistentTasksOverride = persistentTasks;
+        _sessionModeOverride = defaultSessionMode is null ? null : SessionModes.Validate(defaultSessionMode);
     }
 
     private string StatePath => _statePath;
@@ -63,6 +72,12 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
                 throw new InvalidOperationException("Agent registry state is invalid.");
             }
             _hostId = state.HostId;
+            _persistentTasks = _persistentTasksOverride ?? state.PersistentTasks;
+            _defaultSessionMode = SessionModes.Validate(_sessionModeOverride ?? state.DefaultSessionMode);
+            if (_persistentTasks)
+            {
+                await SqliteTaskStore.InitializeAsync(HistoryPath, cancellationToken);
+            }
             _catalogs = state.Catalogs ?? new Dictionary<string, string[]>
             {
                 ["default"] = state.Agents.Select(a => a.Id).ToArray()
@@ -87,6 +102,10 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
                 {
                     PersonaNames.Validate(registration.Persona);
                 }
+                if (registration.SessionMode is not null)
+                {
+                    SessionModes.Validate(registration.SessionMode);
+                }
                 if (_agents.ContainsKey(registration.Id) || _agents.Values.Any(
                     a => a.Registration.WorkspacePath.Equals(NormalizePath(registration.WorkspacePath), PathComparison)))
                 {
@@ -107,7 +126,8 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
                 }
             }
             else if (state.Catalogs is null || !state.Catalogs.ContainsKey("default")
-                || (_port is not null && state.Port != _port))
+                || (_port is not null && state.Port != _port)
+                || state.PersistentTasks != _persistentTasks || state.DefaultSessionMode != _defaultSessionMode)
             {
                 await SaveAsync(_agents.Values.Select(a => a.Registration), cancellationToken);
             }
@@ -129,7 +149,8 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
     private AgentRegistrationView View(HostedAgent agent) => new(
         agent.Registration.Id, agent.Registration.WorkspacePath, agent.Status, agent.Error,
         $"{_baseUrl}/agents/{agent.Registration.Id}/.well-known/agent-card.json", agent.Registration.Persona,
-        _catalogs.Where(c => c.Value.Contains(agent.Registration.Id)).Select(c => c.Key).Order().ToArray());
+        _catalogs.Where(c => c.Value.Contains(agent.Registration.Id)).Select(c => c.Key).Order().ToArray(),
+        agent.Registration.SessionMode ?? _defaultSessionMode);
 
     public AgentCard GetCard(string id) => RequireReady(id).Card
         ?? throw new InvalidOperationException("Ready agent has no card.");
@@ -139,6 +160,10 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
 
     private HostedAgent RequireReady(string id)
     {
+        if (_historyHealth.Failed)
+        {
+            throw new AgentRegistryException(503, "Task history is unavailable. Repair storage and restart the host.");
+        }
         if (!_agents.TryGetValue(id, out var agent))
         {
             throw new AgentRegistryException(404, $"Agent '{id}' is not registered.");
@@ -195,6 +220,10 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
         {
             PersonaNames.Validate(request.Persona);
         }
+        if (request.SessionMode is not null)
+        {
+            SessionModes.Validate(request.SessionMode);
+        }
         ValidateWorkspace(path);
         // Read the profile before reserving or persisting an invalid registration.
         var knowledge = new RepositoryKnowledge(path);
@@ -206,7 +235,9 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
             if (_agents.TryGetValue(id, out var existing))
             {
                 if (request.Catalog is not null && existing.Registration.WorkspacePath.Equals(path, PathComparison)
-                    && (request.Persona is null || request.Persona == existing.Registration.Persona))
+                    && (request.Persona is null || request.Persona == existing.Registration.Persona)
+                    && (request.SessionMode is null
+                        || request.SessionMode == (existing.Registration.SessionMode ?? _defaultSessionMode)))
                 {
                     var memberships = WithMembership(catalog, id);
                     await SaveAsync(_agents.Values.Select(a => a.Registration), cancellationToken, memberships);
@@ -219,7 +250,7 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
             {
                 throw new AgentRegistryException(409, "This repository folder is already registered.");
             }
-            var registration = new AgentRegistration(id, path, request.Persona);
+            var registration = new AgentRegistration(id, path, request.Persona, request.SessionMode);
             var agent = await StartAgentAsync(registration, cancellationToken);
             var catalogs = WithMembership(catalog, id);
             try
@@ -300,7 +331,31 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
         IHostedAgentRuntime? runtime = null;
         try
         {
+            if (_historyHealth.Failed)
+            {
+                throw new InvalidOperationException("Task history is unavailable.");
+            }
             ValidateWorkspace(registration.WorkspacePath);
+            ITaskStore store = new InMemoryTaskStore();
+            if (_persistentTasks)
+            {
+                var owner = SqliteTaskStore.OwnerKey(_hostId, registration.Id, registration.WorkspacePath);
+                try
+                {
+                    await SqliteTaskStore.RegisterOwnerAsync(HistoryPath, owner, _hostId, registration, cancellationToken);
+                }
+                catch (Exception exception) when (exception is Microsoft.Data.Sqlite.SqliteException or IOException)
+                {
+                    _historyHealth.Fail();
+                    throw;
+                }
+                store = new SqliteTaskStore(HistoryPath, owner, _historyHealth);
+            }
+            if ((registration.SessionMode ?? _defaultSessionMode) == "daily")
+            {
+                _logger.LogWarning("Agent {AgentId} requests daily sessions. Daily compaction is reserved; effective mode remains single.",
+                    registration.Id);
+            }
             var knowledge = new RepositoryKnowledge(registration.WorkspacePath);
             var card = AgentCards.Create(_baseUrl, registration.Id, knowledge.Identity);
             runtime = _factory(registration, knowledge);
@@ -308,7 +363,7 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
             agent.Runtime = runtime;
             agent.Card = card;
             agent.Server = new InputAwareA2AServer(new RepositoryAgentHandler(runtime,
-                _loggerFactory.CreateLogger<RepositoryAgentHandler>()), new InMemoryTaskStore(),
+                _loggerFactory.CreateLogger<RepositoryAgentHandler>(), recordRequests: _persistentTasks), store,
                 new ChannelEventNotifier(), _loggerFactory.CreateLogger<A2AServer>(),
                 new A2AServerOptions { SupportsStreaming = true });
             agent.Status = "ready";
@@ -362,7 +417,8 @@ public sealed class AgentRegistry : IHostedService, IAsyncDisposable
     private async Task SaveAsync(IEnumerable<AgentRegistration> registrations, CancellationToken cancellationToken,
         Dictionary<string, string[]>? catalogs = null)
     {
-        var state = new HostConfiguration(_hostId, registrations.OrderBy(a => a.Id).ToArray(), catalogs ?? _catalogs, _port);
+        var state = new HostConfiguration(_hostId, registrations.OrderBy(a => a.Id).ToArray(), catalogs ?? _catalogs, _port,
+            _persistentTasks, _defaultSessionMode);
         await File.WriteAllTextAsync(StatePath + ".tmp", JsonSerializer.Serialize(state, JsonOptions), cancellationToken);
         File.Move(StatePath + ".tmp", StatePath, overwrite: true);
     }

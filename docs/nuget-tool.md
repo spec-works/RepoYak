@@ -31,14 +31,17 @@ dotnet pack .\src\RepoYak.Api\RepoYak.Api.csproj -c Release `
 
 The verification script checks the matching package's required assets, installs the manifest
 into a disposable tool directory, and exercises `repoyak --version` and `--help`. It then
-starts the installed Copilot runtime through the SDK and checks a RPC ping without creating a
-session, running tools, or invoking a model. It uses isolated runtime state and disables logged-in
+starts the installed Copilot runtime through the SDK and checks a RPC ping without running tools
+or invoking a model for the ping. It also invokes `ask_user` directly through the SDK to verify
+both user-input and structured elicitation callbacks without model inference.
+It uses isolated runtime state and disables logged-in
 user authentication. It does not alter the real RepoYak host, registrations, or conversations.
 It also launches the installed host on a temporary loopback port with a new registry, checks health
 and catalog HTTP responses, and terminates that helper process.
 It also checks same-user CLI registration, listing, removal, shutdown, and persistence after
-restarting the host, without starting an agent inference session. Temporary installation/state
-files are cleaned up.
+restarting the host. A disposable non-Git folder is registered and `/new-session` verifies session
+initialization with experimental mode enabled in an isolated Copilot profile, without inference.
+Temporary installation/state files are cleaned up.
 
 On macOS, use a physical temporary directory: `/var` is a symlink to `/private/var`, and the
 host deliberately rejects workspace paths through symlinks. From the repository root:

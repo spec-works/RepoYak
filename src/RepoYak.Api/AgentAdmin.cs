@@ -12,9 +12,9 @@ public sealed class AgentAdmin(AgentRegistry registry, string pipeName, ILogger<
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     public const string Usage = """
         Usage:
-          repoyak start [repository-path] [--background]
+          repoyak start [repository-path] [--background] [--no-persistent-tasks] [--default-session-mode <single|daily>]
           repoyak stop
-          repoyak add <repository-path> [--id <friendly-id>] [--persona <custom-agent-name>] [--catalog <name>]
+          repoyak add <repository-path> [--id <friendly-id>] [--persona <custom-agent-name>] [--catalog <name>] [--session-mode <single|daily>]
           repoyak remove <friendly-id> [--catalog <name>]
           repoyak list [--catalog <name>]
         All commands accept --config <json-path> and --port <port>.
@@ -24,6 +24,8 @@ public sealed class AgentAdmin(AgentRegistry registry, string pipeName, ILogger<
         'stop' shuts down the host and its agents without removing saved registrations.
         'add', 'remove', and 'list' manage agents in the running host.
         Commands target the current user and REPOSITORY_AGENT_PORT (default 5080).
+        Tasks persist by default in <host-state>\history.db. --no-persistent-tasks saves an opt-out in host config.
+        Session mode defaults to single. Daily is a reserved setting; effective behavior remains single.
         'serve' and a single repository-path argument remain foreground host aliases.
         """;
 
@@ -85,6 +87,7 @@ public sealed class AgentAdmin(AgentRegistry registry, string pipeName, ILogger<
         }
         string? id = null;
         string? persona = null;
+        string? sessionMode = null;
         for (var index = 2; index < args.Length; index += 2)
         {
             if (index + 1 >= args.Length)
@@ -99,11 +102,14 @@ public sealed class AgentAdmin(AgentRegistry registry, string pipeName, ILogger<
                 case "--persona" when persona is null:
                     persona = PersonaNames.Validate(args[index + 1]);
                     break;
+                case "--session-mode" when sessionMode is null:
+                    sessionMode = SessionModes.Validate(args[index + 1]);
+                    break;
                 default:
                     throw new AgentRegistryException(400, "Unknown or repeated option.\n" + Usage);
             }
         }
-        return new("add", args[1], id, persona, catalog);
+        return new("add", args[1], id, persona, catalog, sessionMode);
     }
 
     public static async Task<int> RunCommandAsync(string[] args, string pipeName)
@@ -239,13 +245,13 @@ public sealed class AgentAdmin(AgentRegistry registry, string pipeName, ILogger<
             case "add":
                 var agent = await registry.AddAsync(new RegisterAgentRequest(
                     command.WorkspacePath ?? throw new AgentRegistryException(400, "A repository path is required."),
-                    command.Id, command.Persona, command.Catalog), cancellationToken);
+                    command.Id, command.Persona, command.Catalog, command.SessionMode), cancellationToken);
                 return new AdminReply(agent.Status == "ready", agent.Error, [agent]);
             case "remove":
                 await registry.RemoveAsync(AgentIds.Validate(
                     command.Id ?? throw new AgentRegistryException(400, "An agent ID is required.")), cancellationToken, command.Catalog);
                 return new AdminReply(true);
-            case "stop" when command.WorkspacePath is null && command.Id is null && command.Persona is null && command.Catalog is null:
+            case "stop" when command.WorkspacePath is null && command.Id is null && command.Persona is null && command.Catalog is null && command.SessionMode is null:
                 return new AdminReply(true, HostProcessId: Environment.ProcessId);
             case "list":
                 return new AdminReply(true, Agents: registry.List(command.Catalog).ToArray(), HostProcessId: Environment.ProcessId);
@@ -255,7 +261,7 @@ public sealed class AgentAdmin(AgentRegistry registry, string pipeName, ILogger<
     }
 
     public sealed record AdminCommand(string Command, string? WorkspacePath = null, string? Id = null,
-        string? Persona = null, string? Catalog = null);
+        string? Persona = null, string? Catalog = null, string? SessionMode = null);
     public sealed record AdminReply(bool Success, string? Error = null, AgentRegistrationView[]? Agents = null,
         int? HostProcessId = null);
 }

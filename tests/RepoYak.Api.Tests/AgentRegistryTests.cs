@@ -243,6 +243,135 @@ public sealed class AgentRegistryTests : IAsyncLifetime
         Assert.NotEqual(AgentAdmin.PipeName(5099, config), AgentAdmin.PipeName(5099, config + "other"));
     }
 
+    [Fact]
+    public void StartupOptionsAndAgentSessionOverridesAreParsedSeparately()
+    {
+        var options = RepoYak.Api.HostOptions.Parse(["--no-persistent-tasks", "start",
+            "--default-session-mode", "daily", "--background"]);
+        Assert.False(options.PersistentTasks);
+        Assert.Equal("daily", options.DefaultSessionMode);
+        Assert.Equal(new[] { "start", "--background" }, options.Arguments);
+        var command = AgentAdmin.ParseCommand(["add", InitialWorkspace, "--session-mode", "single"]);
+        Assert.Equal("single", command.SessionMode);
+        Assert.Null(RepoYak.Api.HostOptions.Parse(["start"]).PersistentTasks);
+        Assert.Null(RepoYak.Api.HostOptions.Parse(["start"]).DefaultSessionMode);
+    }
+
+    [Theory]
+    [InlineData("start", "--no-persistent-tasks", "--no-persistent-tasks")]
+    [InlineData("list", "--no-persistent-tasks")]
+    [InlineData("start", "--default-session-mode", "weekly")]
+    [InlineData("start", "--default-session-mode")]
+    [InlineData("start", "--default-session-mode", "daily", "--default-session-mode", "single")]
+    public void InvalidHistoryStartupOptionsAreRejected(params string[] args)
+    {
+        Assert.Throws<AgentRegistryException>(() => RepoYak.Api.HostOptions.Parse(args));
+    }
+
+    [Theory]
+    [InlineData("add", "workspace", "--session-mode", "weekly")]
+    [InlineData("add", "workspace", "--session-mode")]
+    [InlineData("add", "workspace", "--session-mode", "daily", "--session-mode", "single")]
+    [InlineData("list", "--session-mode", "daily")]
+    public void InvalidAgentSessionOptionsAreRejected(params string[] args)
+    {
+        Assert.Throws<AgentRegistryException>(() => AgentAdmin.ParseCommand(args));
+    }
+
+    [Fact]
+    public async Task PersistentTasksSurviveRestartUnregisterAndSessionRotationWithoutCrossWorkspaceLeakage()
+    {
+        var registry = CreateRegistry();
+        await registry.StartAsync(CancellationToken.None);
+        var response = await registry.GetHandler("portfolio").SendMessageAsync(Request("durable-work", "context"));
+        var task = Assert.IsType<AgentTask>(response.Task);
+        await registry.GetHandler("portfolio").SendMessageAsync(Request("/new-session", "context"));
+        await registry.DisposeAsync();
+        var restarted = CreateRegistry();
+        await restarted.StartAsync(CancellationToken.None);
+        var loaded = await restarted.GetHandler("portfolio").GetTaskAsync(new GetTaskRequest { Id = task.Id });
+        Assert.Equal(TaskState.Completed, loaded.Status.State);
+        Assert.Equal("Delivered by portfolio", loaded.Artifacts![0].Parts[0].Text);
+        Assert.Contains(loaded.History!, message => message.Parts.Any(part => part.Text == "durable-work"));
+        await restarted.RemoveAsync("portfolio", CancellationToken.None);
+        await restarted.AddAsync(new(CreateWorkspace("Replacement"), "portfolio"), CancellationToken.None);
+        await Assert.ThrowsAsync<A2AException>(() => restarted.GetHandler("portfolio")
+            .GetTaskAsync(new GetTaskRequest { Id = task.Id }));
+        await restarted.RemoveAsync("portfolio", CancellationToken.None);
+        await restarted.AddAsync(new(InitialWorkspace), CancellationToken.None);
+        Assert.Equal(task.Id, (await restarted.GetHandler("portfolio").GetTaskAsync(new GetTaskRequest { Id = task.Id })).Id);
+    }
+
+    [Fact]
+    public async Task InMemoryOptOutIsSavedAndDoesNotCreateOrDestroyTheExistingLedger()
+    {
+        var registry = CreateRegistry();
+        await registry.StartAsync(CancellationToken.None);
+        var persisted = Assert.IsType<AgentTask>((await registry.GetHandler("portfolio")
+            .SendMessageAsync(Request("persisted", "context"))).Task);
+        await registry.DisposeAsync();
+        var volatileRegistry = new AgentRegistry(InitialWorkspace, StateDirectory, [], "http://127.0.0.1:5080",
+            (registration, _) => new FakeRuntime(registration.Id, false), NullLoggerFactory.Instance,
+            persistentTasks: false);
+        _registries.Add(volatileRegistry);
+        await volatileRegistry.StartAsync(CancellationToken.None);
+        await Assert.ThrowsAsync<A2AException>(() => volatileRegistry.GetHandler("portfolio")
+            .GetTaskAsync(new GetTaskRequest { Id = persisted.Id }));
+        var temporary = Assert.IsType<AgentTask>((await volatileRegistry.GetHandler("portfolio")
+            .SendMessageAsync(Request("temporary", "context"))).Task);
+        await volatileRegistry.DisposeAsync();
+        var restarted = CreateRegistry();
+        await restarted.StartAsync(CancellationToken.None);
+        await Assert.ThrowsAsync<A2AException>(() => restarted.GetHandler("portfolio")
+            .GetTaskAsync(new GetTaskRequest { Id = temporary.Id }));
+        using var json = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(StateDirectory, "agents.json")));
+        Assert.False(json.RootElement.GetProperty("persistentTasks").GetBoolean());
+        await restarted.DisposeAsync();
+        var restored = new AgentRegistry(InitialWorkspace, StateDirectory, [], "http://127.0.0.1:5080",
+            (registration, _) => new FakeRuntime(registration.Id, false), NullLoggerFactory.Instance,
+            persistentTasks: true);
+        _registries.Add(restored);
+        await restored.StartAsync(CancellationToken.None);
+        Assert.Equal(persisted.Id, (await restored.GetHandler("portfolio").GetTaskAsync(new GetTaskRequest { Id = persisted.Id })).Id);
+    }
+
+    [Fact]
+    public async Task FreshOptOutAndSessionSettingsSurviveRestartWithDailyExplicitlyReserved()
+    {
+        var registry = new AgentRegistry(InitialWorkspace, StateDirectory, [], "http://127.0.0.1:5080",
+            (registration, _) => new FakeRuntime(registration.Id, false), NullLoggerFactory.Instance,
+            persistentTasks: false, defaultSessionMode: "daily");
+        _registries.Add(registry);
+        await registry.StartAsync(CancellationToken.None);
+        var inherited = Assert.Single(registry.List());
+        Assert.Equal("daily", inherited.SessionMode);
+        Assert.Equal("single", inherited.EffectiveSessionMode);
+        Assert.False(File.Exists(Path.Combine(StateDirectory, "history.db")));
+        var other = await registry.AddAsync(new(CreateWorkspace("Other"), SessionMode: "single"), CancellationToken.None);
+        Assert.Equal("single", other.SessionMode);
+        await registry.DisposeAsync();
+        var restarted = CreateRegistry();
+        await restarted.StartAsync(CancellationToken.None);
+        Assert.Equal("daily", restarted.List().Single(view => view.Id == "portfolio").SessionMode);
+        Assert.Equal("single", restarted.List().Single(view => view.Id == "other").SessionMode);
+        Assert.All(restarted.List(), view => Assert.Equal("single", view.EffectiveSessionMode));
+        Assert.False(File.Exists(Path.Combine(StateDirectory, "history.db")));
+        await Assert.ThrowsAsync<AgentRegistryException>(() => restarted.AddAsync(
+            new(InitialWorkspace, Catalog: "support", SessionMode: "single"), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task OwnerRegistrationStorageFailureBlocksWorkOnExistingAgents()
+    {
+        var registry = CreateRegistry();
+        await registry.StartAsync(CancellationToken.None);
+        File.WriteAllText(Path.Combine(StateDirectory, "history.db"), "corrupt history");
+        var failed = await registry.AddAsync(new(CreateWorkspace("Other")), CancellationToken.None);
+        Assert.Equal("failed", failed.Status);
+        Assert.Equal(503, Assert.Throws<AgentRegistryException>(() => registry.GetHandler("portfolio")).StatusCode);
+        Assert.Empty(_runtimes["portfolio"].History);
+    }
+
     [Theory]
     [InlineData("start", "--port", "0")]
     [InlineData("start", "--port", "65536")]

@@ -40,7 +40,7 @@ stateDirectory = Path.GetFullPath(stateDirectory);
 if (background)
 {
     Environment.ExitCode = await HostCommands.StartBackgroundAsync(initialWorkspace, port, pipeName, stateDirectory,
-        hostOptions.ConfigPath);
+        hostOptions.ConfigPath, hostOptions.PersistentTasks, hostOptions.DefaultSessionMode);
     return;
 }
 using var backgroundLog = backgroundWorker
@@ -61,7 +61,8 @@ builder.Services.AddSingleton(provider => new AgentRegistry(
     (registration, knowledge) => new CopilotAgentService(knowledge, builder.Configuration,
         provider.GetRequiredService<ILoggerFactory>().CreateLogger<CopilotAgentService>(),
         registration.Id, stateDirectory, provider.GetRequiredService<SharedCopilotRuntime>(), registration.Persona),
-    provider.GetRequiredService<ILoggerFactory>(), hostOptions.ConfigPath, port));
+    provider.GetRequiredService<ILoggerFactory>(), hostOptions.ConfigPath, port,
+    hostOptions.PersistentTasks, hostOptions.DefaultSessionMode));
 builder.Services.AddHostedService(provider => provider.GetRequiredService<AgentRegistry>());
 builder.Services.AddHostedService(provider => new AgentAdmin(
     provider.GetRequiredService<AgentRegistry>(), pipeName, provider.GetRequiredService<ILogger<AgentAdmin>>(),

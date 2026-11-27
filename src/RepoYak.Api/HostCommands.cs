@@ -48,7 +48,8 @@ public static class HostCommands
             : throw new AgentRegistryException(400, "A repository path cannot be empty.");
 
     public static async Task<int> StartBackgroundAsync(string? workspacePath, int port,
-        string pipeName, string stateDirectory, string? configPath = null)
+        string pipeName, string stateDirectory, string? configPath = null,
+        bool? persistentTasks = null, string? defaultSessionMode = null)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -69,6 +70,15 @@ public static class HostCommands
         start.ArgumentList.Add("start");
         start.ArgumentList.Add("--port");
         start.ArgumentList.Add(port.ToString());
+        if (persistentTasks == false)
+        {
+            start.ArgumentList.Add("--no-persistent-tasks");
+        }
+        if (defaultSessionMode is not null)
+        {
+            start.ArgumentList.Add("--default-session-mode");
+            start.ArgumentList.Add(SessionModes.Validate(defaultSessionMode));
+        }
         if (configPath is not null)
         {
             start.ArgumentList.Add("--config");

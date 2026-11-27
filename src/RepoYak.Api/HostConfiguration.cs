@@ -3,9 +3,11 @@ using System.Text.Json;
 namespace RepoYak.Api;
 
 public sealed record HostConfiguration(string HostId, AgentRegistration[] Agents,
-    Dictionary<string, string[]>? Catalogs = null, int? Port = null);
+    Dictionary<string, string[]>? Catalogs = null, int? Port = null,
+    bool PersistentTasks = true, string DefaultSessionMode = "single");
 
-public sealed record HostOptions(string[] Arguments, string? ConfigPath, int Port)
+public sealed record HostOptions(string[] Arguments, string? ConfigPath, int Port,
+    bool? PersistentTasks = null, string? DefaultSessionMode = null)
 {
     public string? StateDirectory => ConfigPath is null ? null : ConfigPath + ".state";
 
@@ -13,17 +15,31 @@ public sealed record HostOptions(string[] Arguments, string? ConfigPath, int Por
     {
         string? config = null;
         int? port = null;
+        bool? persistentTasks = null;
+        string? sessionMode = null;
         var arguments = new List<string>();
         for (var index = 0; index < args.Length; index++)
         {
-            if (args[index] is "--config" or "--port")
+            if (args[index] == "--no-persistent-tasks")
+            {
+                if (persistentTasks is not null)
+                {
+                    throw new AgentRegistryException(400, "Repeated --no-persistent-tasks.");
+                }
+                persistentTasks = false;
+            }
+            else if (args[index] is "--config" or "--port" or "--default-session-mode")
             {
                 var option = args[index];
                 if (++index >= args.Length || string.IsNullOrWhiteSpace(args[index]) || args[index].StartsWith('-'))
                 {
                     throw new AgentRegistryException(400, $"A value is required for {option}.");
                 }
-                if (option == "--config" && config is null)
+                if (option == "--default-session-mode" && sessionMode is null)
+                {
+                    sessionMode = SessionModes.Validate(args[index]);
+                }
+                else if (option == "--config" && config is null)
                 {
                     config = Path.GetFullPath(args[index]);
                 }
@@ -41,6 +57,11 @@ public sealed record HostOptions(string[] Arguments, string? ConfigPath, int Por
             {
                 arguments.Add(args[index]);
             }
+        }
+        if ((persistentTasks is not null || sessionMode is not null)
+            && arguments.FirstOrDefault() is "add" or "remove" or "stop" or "list")
+        {
+            throw new AgentRegistryException(400, "Task persistence and default session mode are host startup options.");
         }
         if (port is null && config is not null && File.Exists(config))
         {
@@ -64,6 +85,6 @@ public sealed record HostOptions(string[] Arguments, string? ConfigPath, int Por
         {
             throw new AgentRegistryException(400, "Port must be between 1 and 65535.");
         }
-        return new HostOptions(arguments.ToArray(), config, port.Value);
+        return new HostOptions(arguments.ToArray(), config, port.Value, persistentTasks, sessionMode);
     }
 }

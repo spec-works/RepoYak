@@ -2,7 +2,7 @@
 
 **Let your repos speak for themselves.**
 
-RepoYak is a Spec-Works project that turns a local Git repository into an independently addressable
+RepoYak is a Spec-Works project that turns a local folder into an independently addressable
 A2A agent. The repository supplies its knowledge, instructions, skills, and MCP capabilities:
 the repo is the agent.
 One host manages multiple repository agents, each with its own identity and persistent session.
@@ -23,14 +23,20 @@ The [host contract](docs/host-contract.md) documents RepoYak-specific behaviour.
 [specs.json](specs.json) links the underlying specifications in the Spec-Works linkset convention.
 See [contributing](CONTRIBUTING.md) and the [MIT license](LICENSE).
 
+Design material: [persistent task and session history proposal](docs/proposals/persistent-task-and-session-history.html),
+grounded in the imported [Agents, Tasks, and Sessions design note](docs/design-notes/agents-tasks-and-sessions.md).
+The durable task archive is implemented; the session registry, recall, and daily compaction cycle
+remain proposals.
+
 This is an **incubating host/tool**, not a published conformant Spec-Works part.
 [ADR 0001](adr/0001-spec-works-incubation.md) records the affiliation and staging exceptions.
 
 A local multi-agent A2A host backed by the Microsoft Copilot SDK for .NET
 (currently packaged as `GitHub.Copilot.SDK`). Each configured workspace
 supplies an agent's knowledge, instructions, skills, and descriptive identity. Each agent owns a
-persistent Copilot session and a separate A2A task store. Workspaces currently use local Git
-repositories, but their public agent cards do not expose that implementation detail.
+persistent Copilot session and a separate A2A task store. Workspaces can be ordinary document
+folders or Git repositories. Git support is detected from a `.git` file or directory at the
+workspace root; it is not a registration requirement.
 
 The host source repository and the grounding repository are separate. No portfolio content is
 copied into this repository.
@@ -113,7 +119,7 @@ From the repository root, `run.ps1` restores the persisted agent registrations:
 .\run.ps1
 ```
 
-Pass another local Git repository path directly when needed:
+Pass another local folder path directly when needed:
 
 ```powershell
 .\run.ps1 -RepositoryPath "D:\github\some-repository"
@@ -229,6 +235,41 @@ One host can expose multiple catalogs on the same port. Agents are registered on
 `/agents/{id}`; catalogs reference those shared agents and do not create additional sessions.
 `/catalogs/{name}` serves a named AI Catalog document. `/catalog` remains an alias for
 `/catalogs/default`. Catalog names follow the same lowercase hyphen-separated rules as agent IDs.
+
+### Task persistence and session policy
+
+Task snapshots, caller messages, result artifacts, and state transitions persist by default in
+`<host-state>\history.db`. History is scoped to the durable host ID, agent ID, and canonical
+workspace, not the catalog or public AIR identifier. It survives restart, unregister/re-register
+of the same binding, and `/new-session`. Reusing an ID for another workspace does not expose old tasks.
+
+```powershell
+repoyak start --no-persistent-tasks --config "D:\agents\host.json"
+repoyak start --default-session-mode single --config "D:\agents\host.json"
+repoyak add "D:\knowledge\project" --session-mode single --config "D:\agents\host.json"
+```
+
+`--no-persistent-tasks` saves `persistentTasks: false` in the host configuration. In-memory mode
+does not load, migrate, or delete an existing ledger, and new tasks in that mode are not archived.
+To re-enable persistence, stop the host, set `persistentTasks` to `true` in its JSON configuration,
+then restart. CLI startup settings override the saved values and are persisted, including in
+background mode. Old configurations default to persistence enabled and single sessions.
+
+The host's `defaultSessionMode` and each registration's optional `sessionMode` accept `single` or
+`daily`. Agent `list` output reports the requested `sessionMode` and `effectiveSessionMode`.
+**Daily is reserved for the synthesis/recall implementation; effective behavior remains `single`,
+with a startup warning when daily is requested.** Change saved policies while stopped, or use an
+override when registering an agent; adding catalog membership cannot change its policy.
+
+After a crash, unfinished tasks become Failed with an outcome-unknown explanation, retaining
+partial results. Commands are never replayed. Storage failure prevents durable success acknowledgements
+and further admission until repair/restart. SQLite uses transactional writes, FULL synchronous
+durability, and a five-second busy timeout. Keep live history on local disk.
+OAuth links/details are filtered from snapshots and transitions; live pending sign-in links remain
+in memory. User-pasted secrets cannot be reliably redacted. History has no automatic expiry,
+encryption, or new per-caller security boundary. Public export/deletion controls, session indexing,
+date-recall tools, and synthesis are not implemented yet; back up only while stopped or through a
+consistent SQLite backup, not by copying a live database file.
 
 Use `--config` on every command to select a JSON configuration file. `start` creates it if
 missing; `add` and `remove` persist agent registrations and memberships there. `--port` overrides
@@ -401,13 +442,15 @@ automatically. Publishing also copies it alongside the executable as
 
 ## Repository discovery and safety
 
-- The configured path must be a Git repository. The agent scans supported text formats, skips
-  common build, dependency, and Git directories, and does not follow directory junctions or
+- The configured path must be an existing local folder; Git is optional. The agent scans supported
+  text formats, skips common build, dependency, and Git directories, and does not follow directory junctions or
   symlinks outside normal traversal.
 - Skills are found by locating `SKILL.md` files and passing their skill roots to the Copilot SDK.
   Repository instructions and local custom agents are loaded. Runtime discovery of supported
   Copilot configuration is enabled, including MCP server definitions; explicitly supplied host
   settings take precedence over discovered values. File hooks remain explicitly disabled.
+  CLI extensions are explicitly disabled because the bundled standalone runtime has no extension
+  launch provider, even when experimental mode is enabled in the user's Copilot settings.
   Repository MCP configuration (`.mcp.json` or `.github/mcp.json`) requires the repository folder
   to be trusted in the host user's Copilot profile; the host does not bypass folder trust.
   Discovered MCP servers can launch local commands or connect to external services under the host
@@ -420,9 +463,11 @@ automatically. Publishing also copies it alongside the executable as
   access by other processes running on the same machine.
 - Responses should cite repository-relative source paths and distinguish current facts from dated
   or exploratory material.
-- Agents are instructed to check repository freshness and use `git pull --ff-only` on a clean
-  branch with a configured upstream. Local changes, divergence, missing upstream, and update
-  failures must be reported rather than bypassed. External service calls are not categorically
+- For workspaces with Git metadata, agents are instructed to check repository freshness and use
+  `git pull --ff-only` on a clean branch with a configured upstream. Local changes, divergence,
+  missing upstream, and update failures must be reported rather than bypassed. Without Git metadata,
+  agents use current local files and do not assume a branch or remote, or initialize Git unless
+  explicitly requested. External service calls are not categorically
   prohibited by the host prompt; credential and private-data protections still apply.
 - One Copilot session is shared by all work for each agent workspace, regardless of the caller's A2A
   context ID. Turns are serialized. Different callers share history; this is not caller isolation.
@@ -440,8 +485,24 @@ automatically. Publishing also copies it alongside the executable as
   single-agent session state is imported if available. Resume failures are reported rather than
   replaced with a fresh session. Only one running agent may own a workspace at a time, even across
   hosts.
-- A2A task records currently use the SDK's in-memory store and do not survive restart, even though
-  the Copilot session does. Task completion means execution finished, not that the caller accepted
-  the outcome. Interactive input/approval bridging is not implemented yet.
+- A2A task records persist by default in the local SQLite ledger; `--no-persistent-tasks` retains
+  the former in-memory behavior. Task completion means execution finished, not that the caller accepted
+  the outcome. SDK user-input and elicitation requests pause the same task in `input_required`.
+  Reply using that task ID to resume its original turn; synchronous responses and streams return
+  at the input boundary. Questions, choices, form schemas, and browser URLs are included in the
+  task status message. Browser URLs are not opened automatically. Tool permissions remain
+  automatically approved; permission-approval bridging is not implemented.
+- Local MCP OAuth is available through the agent's `authenticate_mcp` tool. The agent can list
+  configured connection states and request sign-in for a selected server needed for the task.
+  The task returns `auth_required` with a browser sign-in link. Open it **on the RepoYak machine**;
+  the Copilot runtime receives the loopback callback, exchanges the code with PKCE, and reconnects
+  the MCP. The original task resumes automatically: poll it rather than replying "signed in".
+  Tokens and codes are not passed through A2A or returned to the model. OAuth tokens are held in
+  session memory; a new runtime/session can require sign-in again.
+  The MCP's OAuth client registration must permit the runtime's loopback redirect. This does not
+  intercept arbitrary login flows inside stdio MCP executables or add hosted callbacks/OBO.
+  Cancel the task if sign-in is declined or abandoned; provider denial can leave the task awaiting
+  auth until cancellation or the ten-minute turn timeout. `/new-session` is blocked while sign-in
+  is pending. Local callers still share the agent's identity and are not authenticated by this flow.
 - Retrieved repository content is sent to the configured Copilot runtime for inference. Do not point
   the agent at data that is not permitted to leave the machine through that inference service.

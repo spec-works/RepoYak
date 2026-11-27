@@ -12,6 +12,7 @@ public sealed class InputAwareA2AServer(
 {
     private readonly CancellationTokenSource _shutdown = new();
     private int _disposed;
+    private readonly SqliteTaskStore? _persistentStore = taskStore as SqliteTaskStore;
 
     public new async ValueTask DisposeAsync()
     {
@@ -33,7 +34,9 @@ public sealed class InputAwareA2AServer(
     public override async Task<SendMessageResponse> SendMessageAsync(
         SendMessageRequest request, CancellationToken cancellationToken = default)
     {
-        using var observation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
+        _persistentStore?.EnsureAvailable();
+        using var observation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token,
+            _persistentStore?.FailureToken ?? CancellationToken.None);
         if (request.Message.TaskId is not null)
         {
             handler.ValidateInputReply(request.Message);
@@ -73,6 +76,11 @@ public sealed class InputAwareA2AServer(
                 }
             }
         }
+        catch (OperationCanceledException) when (_persistentStore?.FailureToken.IsCancellationRequested == true)
+        {
+            _persistentStore.EnsureAvailable();
+            throw;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && !_shutdown.IsCancellationRequested)
         {
             try
@@ -90,13 +98,15 @@ public sealed class InputAwareA2AServer(
     public override async IAsyncEnumerable<StreamResponse> SendStreamingMessageAsync(
         SendMessageRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var observation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
+        _persistentStore?.EnsureAvailable();
+        using var observation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token,
+            _persistentStore?.FailureToken ?? CancellationToken.None);
         cancellationToken = observation.Token;
         if (request.Message.TaskId is { } taskId)
         {
             handler.ValidateInputReply(request.Message);
             await base.SendMessageAsync(CopyRequest(request, returnImmediately: false), cancellationToken);
-            await foreach (var update in ObserveTaskAsync(taskId, cancellationToken))
+            await foreach (var update in ReadWithStorageErrorsAsync(ObserveTaskAsync(taskId, cancellationToken), cancellationToken))
             {
                 yield return update;
                 if (update.Task is { } task && IsBoundary(task)
@@ -108,7 +118,7 @@ public sealed class InputAwareA2AServer(
         }
         else
         {
-            await foreach (var update in base.SendStreamingMessageAsync(request, cancellationToken))
+            await foreach (var update in ReadWithStorageErrorsAsync(base.SendStreamingMessageAsync(request, cancellationToken), cancellationToken))
             {
                 yield return update;
                 if (update.StatusUpdate is { } status && IsBoundary(status.Status.State))
@@ -122,8 +132,9 @@ public sealed class InputAwareA2AServer(
     public override async IAsyncEnumerable<StreamResponse> SubscribeToTaskAsync(
         SubscribeToTaskRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var observation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
-        await foreach (var update in ObserveTaskAsync(request.Id, observation.Token))
+        using var observation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token,
+            _persistentStore?.FailureToken ?? CancellationToken.None);
+        await foreach (var update in ReadWithStorageErrorsAsync(ObserveTaskAsync(request.Id, observation.Token), observation.Token))
         {
             yield return update;
             if (update.Task is { } task && IsBoundary(task)
@@ -143,6 +154,7 @@ public sealed class InputAwareA2AServer(
             yield return new StreamResponse { Task = current };
             yield break;
         }
+
         await using var updates = base.SubscribeToTaskAsync(new SubscribeToTaskRequest { Id = taskId }, cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
         while (true)
@@ -178,6 +190,30 @@ public sealed class InputAwareA2AServer(
                 continue;
             }
             yield return update;
+        }
+    }
+
+    private async IAsyncEnumerable<StreamResponse> ReadWithStorageErrorsAsync(
+        IAsyncEnumerable<StreamResponse> source, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await using var iterator = source.GetAsyncEnumerator(cancellationToken);
+        while (true)
+        {
+            bool hasNext;
+            try
+            {
+                hasNext = await iterator.MoveNextAsync();
+            }
+            catch (OperationCanceledException) when (_persistentStore?.FailureToken.IsCancellationRequested == true)
+            {
+                _persistentStore.EnsureAvailable();
+                throw;
+            }
+            if (!hasNext)
+            {
+                yield break;
+            }
+            yield return iterator.Current;
         }
     }
 

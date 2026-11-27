@@ -9,6 +9,8 @@ using System.Net.Sockets;
 using System.Text.Json;
 using SpecWorks.AiCatalog.Parsing;
 using SpecWorks.AiCatalog.Validation;
+using A2A;
+using RepoYak.Api;
 
 if (args is not [var runtimePath, var stateDirectory, var hostPath])
 {
@@ -125,6 +127,8 @@ start.ArgumentList.Add("--config");
 start.ArgumentList.Add(configPath);
 start.ArgumentList.Add("--port");
 start.ArgumentList.Add(port.ToString());
+start.ArgumentList.Add("--default-session-mode");
+start.ArgumentList.Add("daily");
 start.Environment["REPOSITORY_AGENT_PORT"] = port.ToString();
 start.Environment["REPOAGENT_STATE_DIRECTORY"] = Path.Combine(stateDirectory, "host");
 var copilotHome = Path.Combine(stateDirectory, "copilot");
@@ -181,8 +185,26 @@ try
     var workspace = Path.Combine(stateDirectory, "workspace with spaces");
     Directory.CreateDirectory(workspace);
     await File.WriteAllTextAsync(Path.Combine(workspace, "README.md"), "# Package check\n\nDisposable workspace.");
-    await RunCommandAsync("add", workspace, "--id", "package-check");
+    await RunCommandAsync("add", workspace, "--id", "package-check", "--session-mode", "single");
     await VerifyRegistrationAsync(present: true);
+    var hostConfig = JsonSerializer.Deserialize<HostConfiguration>(
+        await File.ReadAllTextAsync(configPath, timeout.Token), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    if (!hostConfig.PersistentTasks || hostConfig.DefaultSessionMode != "daily"
+        || hostConfig.Agents.Single().SessionMode != "single")
+    {
+        throw new InvalidOperationException("Installed host did not persist task/session policy settings.");
+    }
+    var historyPath = Path.Combine(configPath + ".state", "history.db");
+    var history = new SqliteTaskStore(historyPath,
+        SqliteTaskStore.OwnerKey(hostConfig.HostId, "package-check", workspace));
+    var archivedTask = new AgentTask
+    {
+        Id = "native-history-check", ContextId = "history-check",
+        Status = new A2A.TaskStatus { State = TaskState.Completed, Timestamp = DateTimeOffset.UtcNow },
+        History = [new Message { MessageId = "history-message", Role = Role.User, Parts = [Part.FromText("Synthetic history check")] }],
+        Artifacts = [new Artifact { ArtifactId = "history-result", Parts = [Part.FromText("Archived without inference")] }]
+    };
+    await history.SaveTaskAsync(archivedTask.Id, archivedTask, timeout.Token);
     var populatedCatalog = AiCatalogParser.Parse(await http.GetStringAsync("/catalog", timeout.Token));
     if (!AiCatalogValidator.Validate(populatedCatalog, ConformanceLevel.Discoverable).IsValid
         || populatedCatalog.Entries.Count != 1
@@ -228,6 +250,19 @@ try
     try
     {
         await VerifyRegistrationAsync(present: true);
+        var taskClient = new A2AHttpJsonClient(new Uri(http.BaseAddress!, "/agents/package-check"), http);
+        var retrievedTask = await taskClient.GetTaskAsync(new GetTaskRequest { Id = archivedTask.Id }, timeout.Token);
+        if (retrievedTask.Status.State != TaskState.Completed
+            || retrievedTask.Artifacts?[0].Parts[0].Text != "Archived without inference")
+        {
+            throw new InvalidOperationException("Installed host did not return the durable task after restart.");
+        }
+        using var views = JsonDocument.Parse(await RunCommandAsync("list"));
+        if (views.RootElement[0].GetProperty("sessionMode").GetString() != "single"
+            || views.RootElement[0].GetProperty("effectiveSessionMode").GetString() != "single")
+        {
+            throw new InvalidOperationException("Installed host reported an unexpected session policy.");
+        }
         await RunCommandAsync("remove", "package-check");
         await VerifyRegistrationAsync(present: false);
         await RunCommandAsync("stop");

@@ -4,7 +4,8 @@ using System.Text.Json;
 
 namespace RepoYak.Api;
 
-public sealed class RepositoryAgentHandler(IAgentRuntime agent, ILogger<RepositoryAgentHandler> logger) : IAgentHandler
+public sealed class RepositoryAgentHandler(IAgentRuntime agent, ILogger<RepositoryAgentHandler> logger,
+    bool recordRequests = false) : IAgentHandler
 {
     private readonly ConcurrentDictionary<string, PendingInput> _pendingInputs = new();
     private readonly ConcurrentDictionary<string, PendingAuthentication> _pendingAuthentications = new();
@@ -43,8 +44,16 @@ public sealed class RepositoryAgentHandler(IAgentRuntime agent, ILogger<Reposito
     {
         if (context.IsContinuation)
         {
-            if (!_pendingInputs.TryGetValue(context.TaskId, out var pending)
-                || !pending.Response.TrySetResult(ParseInputReply(pending, context.Message)))
+            if (!_pendingInputs.TryGetValue(context.TaskId, out var pending))
+            {
+                throw new A2AException("This input request has already been answered or canceled.", A2AErrorCode.InvalidParams);
+            }
+            var reply = ParseInputReply(pending, context.Message);
+            if (recordRequests)
+            {
+                await eventQueue.EnqueueMessageAsync(context.Message, cancellationToken);
+            }
+            if (!pending.Response.TrySetResult(reply))
             {
                 throw new A2AException("This input request has already been answered or canceled.", A2AErrorCode.InvalidParams);
             }
@@ -76,6 +85,10 @@ public sealed class RepositoryAgentHandler(IAgentRuntime agent, ILogger<Reposito
         if (!context.IsContinuation)
         {
             await updater.SubmitAsync(cancellationToken: cancellationToken);
+            if (recordRequests)
+            {
+                await eventQueue.EnqueueMessageAsync(context.Message, cancellationToken);
+            }
         }
         await updater.StartWorkAsync(cancellationToken: cancellationToken);
         using var inputGate = new SemaphoreSlim(1, 1);

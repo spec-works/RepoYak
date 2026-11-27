@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RepoYak Proposal: Persistent Task and Session History</title>
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("scoutTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --cp-bg: #f7f4ef;
+      --cp-bg-elevated: #fcfbf8;
+      --cp-surface: #ffffff;
+      --cp-surface-soft: #f5f5f5;
+      --cp-border: #dedede;
+      --cp-border-strong: #919191;
+      --cp-text: #242424;
+      --cp-text-muted: #5c5c5c;
+      --cp-text-soft: #6f6f6f;
+      --cp-accent: #b11f4b;
+      --cp-accent-hover: #9a1a41;
+      --cp-accent-soft: rgba(177, 31, 75, 0.08);
+      --cp-accent-fg: #ffffff;
+      --cp-success: #16a34a;
+      --cp-danger: #dc2626;
+      --cp-warning: #f59e0b;
+      --cp-link: #0078d4;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+      --cp-overlay: rgba(255, 255, 255, 0.8);
+      --cp-panel: rgba(255, 255, 255, 0.86);
+      --cp-panel-strong: rgba(255, 255, 255, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.55);
+      --cp-highlight: rgba(177, 31, 75, 0.12);
+    }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --cp-bg: #3d3b3a;
+      --cp-bg-elevated: #343231;
+      --cp-surface: #292929;
+      --cp-surface-soft: #2e2e2e;
+      --cp-border: #474747;
+      --cp-border-strong: #5f5f5f;
+      --cp-text: #dedede;
+      --cp-text-muted: #919191;
+      --cp-text-soft: #b0b0b0;
+      --cp-accent: #fd8ea1;
+      --cp-accent-hover: #fb7b91;
+      --cp-accent-soft: rgba(253, 142, 161, 0.14);
+      --cp-accent-fg: #1a1a1a;
+      --cp-success: #4ade80;
+      --cp-danger: #f87171;
+      --cp-warning: #fbbf24;
+      --cp-link: #4da6ff;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+      --cp-overlay: rgba(41, 41, 41, 0.88);
+      --cp-panel: rgba(41, 41, 41, 0.72);
+      --cp-panel-strong: rgba(41, 41, 41, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.04);
+      --cp-highlight: rgba(253, 142, 161, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--cp-bg); color: var(--cp-text); font: 1rem/1.6 "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; }
+    main { max-width: 72rem; margin: 2rem auto; padding: 2rem; background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 16px; }
+    h1 { line-height: 1.2; }
+    h2 { margin-top: 2.5rem; border-bottom: 1px solid var(--cp-border); padding-bottom: 0.5rem; }
+    h3 { margin-top: 1.5rem; }
+    a { color: var(--cp-link); }
+    code, pre { font-family: Consolas, "Courier New", Courier, monospace; }
+    code { overflow-wrap: anywhere; }
+    pre { white-space: pre-wrap; background: var(--cp-surface-soft); padding: 1rem; border-radius: 0.625rem; border: 1px solid var(--cp-border); }
+    nav, aside { padding: 1rem; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: 0.625rem; }
+    aside { border-left: 4px solid var(--cp-accent); margin: 1.5rem 0; }
+    .meta { color: var(--cp-text-muted); }
+    .badge { display: inline-block; padding: 0.25rem 0.75rem; background: var(--cp-accent-soft); color: var(--cp-accent); border-radius: 0.625rem; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { text-align: left; vertical-align: top; padding: 0.75rem; border: 1px solid var(--cp-border); }
+    th { background: var(--cp-surface-soft); }
+    li { margin-bottom: 0.5rem; }
+    footer { margin-top: 2rem; color: var(--cp-text-muted); }
+    @media (max-width: 40rem) { main { margin: 0; padding: 1rem; border-radius: 0; } }
+    @media print { body, main { background: var(--cp-surface); } main { margin: 0; border: 0; } nav { display: none; } tr, aside { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="badge">Proposal for review &mdash; not implemented</p>
+    <h1>Persistent Task and Session History</h1>
+    <p class="meta">RepoYak &middot; Updated 27 November 2026 &middot; Local personal-agent profile</p>
+    <p><strong>Recommendation:</strong> introduce a durable local history ledger for A2A tasks and an explicit registry of physical SDK conversations. Treat today's conversation as working context and pair daily rotation with end-of-day synthesis of source-linked memories and bounded next-day recall. Ship persistence and retrieval first, then the combined daily compaction cycle. Daily sessions need not align exactly with midnight: rotate between tasks rather than interrupt active execution.</p>
+    <p>Prepared against the current local implementation and the imported <a href="../design-notes/agents-tasks-and-sessions.md">Design Note: Agents, Tasks, and Sessions</a>. This document proposes changes; the <a href="../specification.html">implementation specification</a> and <a href="../host-contract.md">host contract</a> remain descriptions of existing behavior.</p>
+  </header>
+  <nav aria-label="Contents">
+    <strong>Contents</strong>
+    <p><a href="#source">Source and interpretation</a> &middot; <a href="#baseline">Current implementation</a> &middot; <a href="#outcomes">User outcomes</a> &middot; <a href="#model">Domain model</a> &middot; <a href="#storage">Storage</a> &middot; <a href="#sessions">Daily sessions</a> &middot; <a href="#recovery">Recovery</a> &middot; <a href="#recall">Recall and summaries</a> &middot; <a href="#privacy">Privacy</a> &middot; <a href="#delivery">Delivery and tests</a> &middot; <a href="#decisions">Decisions</a> &middot; <a href="#references">References</a></p>
+  </nav>
+
+  <section id="source">
+    <h2>1. Source and interpretation</h2>
+    <p>The supplied note was imported on 22 November 2026 from <code>Design Note Agents, Tasks, and Sessions_4223.md</code> in the user's Downloads folder. The repository copy preserves its text, with line endings/final newline normalized. Original-file SHA-256: <code>FAD5180DFBC3C7C838A570822A640DB8D06F1D31AFDFB28AFC036E34E4FE02E0</code>. It is design input, not an adopted requirement or an attribution of authorship.</p>
+    <div class="table-wrap">
+      <table>
+        <caption>How the imported note affects this proposal</caption>
+        <thead><tr><th>Design-note principle</th><th>Proposed treatment</th></tr></thead>
+        <tbody>
+          <tr><td>One owning agent per task</td><td>Adopt. Store immutable owner identity. A caller can request cancellation; the owning agent's host applies the state transition. Human acceptance remains separate from execution completion.</td></tr>
+          <tr><td>Entry agent owns the saga unless it only routes</td><td>Preserve task links and accountability metadata. A transfer creates a specialist-owned task; it never changes the owner of the existing router task. Orchestration is a later feature.</td></tr>
+          <tr><td>Session keyed by agent and day, with further splits</td><td>Use agent/day as the predictable collection address. Individual sessions need an immutable ID and a within-day ordinal. A day may contain zero or several sessions.</td></tr>
+          <tr><td>No session spans more than a day</td><td>Revised by the user's clarification on 22 November 2026: sessions are physical SDK conversations, but their boundaries need not coincide with midnight. Use daily rotation between tasks and retain actual activity timestamps for historical queries; strict day containment is not required.</td></tr>
+          <tr><td>A cut carries nothing automatically</td><td>Revised by the user's daily-memory rationale on 27 November 2026: do not copy the previous transcript, but pair a fresh daily conversation with bounded, source-linked recall of synthesized memories. This is a separate host-controlled context policy, not execution continuation.</td></tr>
+          <tr><td>User-local day, possibly ending at 4 a.m.</td><td>Persist the local operator's timezone and cutoff policy. Calendar dates and workday dates are distinct query modes; historical assignments are not silently relabeled.</td></tr>
+          <tr><td>Summaries first, raw history second</td><td>Adopt as a recall strategy. Summaries are derived, versioned, and evidence-linked; factual counts come from task records, not model summaries.</td></tr>
+          <tr><td>Agent creation is cheap; catalogs organize without moving storage</td><td>Keep identity independent of membership. Name/purpose-only creation, archival UI, nested catalogs, and routing are adjacent proposals, not prerequisites for persistence.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The note's five transfer/delegation patterns are an interpretation of Rosenberg and Jennings' <a href="https://www.ietf.org/archive/id/draft-rosenberg-aiproto-framework-00.html#section-2.3">Internet-Draft, revision 00, section 2.3</a>, not A2A requirements. That specific revision expired on 22 April 2026 and is historical work in progress, not a current standard. Its terminology is useful without adopting its architecture wholesale.</p>
+    <p>The <a href="https://ai-catalog.io/spec/">AI Catalog specification retrieved on 22 November 2026</a> identifies itself as v0.9, a release candidate for v1.0, and describes nested catalogs. This supports the separation of navigation and storage, but does not establish that RepoYak already implements hierarchical routing or automatic agent creation. Such work should pin a specification revision rather than follow a moving URL.</p>
+  </section>
+
+  <section id="baseline">
+    <h2>2. Current implementation and integration seams</h2>
+    <ul>
+      <li><a href="../../src/RepoYak.Api/AgentRegistry.cs">AgentRegistry</a> now uses <a href="../../src/RepoYak.Api/SqliteTaskStore.cs">SQLite task storage</a> by default at <code>&lt;host-state&gt;\history.db</code>. Sanitized snapshots/transitions and caller messages survive restart and re-registration of the same owner binding. <code>--no-persistent-tasks</code> saves an in-memory opt-out without touching an existing ledger. This is the first delivery, not the session/memory design below.</li>
+      <li><a href="../../src/RepoYak.Api/CopilotAgentService.cs">CopilotAgentService</a> serializes turns and maintains one loaded SDK session per agent. <code>active-session.txt</code> persists only the current session ID, scoped to friendly ID and canonical workspace; it is not a history index.</li>
+      <li><a href="../../src/RepoYak.Api/RepositoryAgentHandler.cs">RepositoryAgentHandler</a> owns the task lifecycle and input/authentication callbacks. <a href="../../src/RepoYak.Api/InputAwareA2AServer.cs">InputAwareA2AServer</a> returns at interrupted boundaries while the original producer stays alive. Those callbacks cannot be reconstructed merely by restoring a task snapshot.</li>
+      <li><a href="../../src/RepoYak.Api/RepositoryKnowledge.cs">RepositoryKnowledge</a> searches bounded workspace text. It does not query task/session history. Daily rotation, historical retrieval, and daily summaries are not implemented.</li>
+    </ul>
+    <p>The pinned SDK package declares <code>ListSessionsAsync</code>, <code>GetSessionMetadataAsync</code>, and session <code>GetEventsAsync</code>. Its XML contract says disposal preserves session state on disk. These APIs are integration candidates, not evidence of a complete, stable, privacy-filtered historical export. Validate their behavior against the bundled runtime before relying on them; do not scrape undocumented SDK storage files or index unrelated Copilot sessions.</p>
+    <p>Task persistence belongs at the task-store boundary; session registration and task/session binding belong where the service selects the actual SDK session. An SDK session ID is not an A2A context ID. Preserve protocol correlation without turning caller context IDs into receiving-session selectors.</p>
+  </section>
+
+  <section id="outcomes">
+    <h2>3. User outcomes and scope</h2>
+    <p>After restart, callers should retrieve previous task messages and results, inspect which sessions held the work, and ask time-based questions without managing SDK session IDs.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Question</th><th>Required evidence</th></tr></thead>
+        <tbody>
+          <tr><td>What did we work on yesterday?</td><td>Agent-scoped task/message activity in the resolved date interval, including unfinished work, with summaries and record citations.</td></tr>
+          <tr><td>How many tasks did we complete Friday?</td><td>Distinct tasks whose durable terminal state is Completed and whose completion time falls in the specified interval. Report scope and distinguish tasks from accepted outcomes.</td></tr>
+          <tr><td>Remember that project from last Wednesday?</td><td>Resolve the date, search that agent's summaries and session/task history, then cite matches or request clarification.</td></tr>
+          <tr><td>What was the result of task X before restart?</td><td>The same owner-scoped task ID, persisted state, messages, and artifacts, regardless of the current SDK session.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Non-goals for the first delivery: automatic replay of interrupted work; durable OAuth tokens; all tool/reasoning traces; a distributed saga engine; per-caller security; hosted/OBO deployment; inventing results for tasks lost before persistence existed. Session history must be designed now, but daily rotation need not ship with the first durable store.</p>
+  </section>
+
+  <section id="model">
+    <h2>4. Domain model: separate ownership, context, and memory</h2>
+    <dl>
+      <dt><strong>Agent identity</strong></dt><dd>A durable history scope with an opaque key and friendly ID/workspace snapshots. Initially associate it with the host's existing agent-ID/canonical-workspace pairing. Re-registering that pair restores the same scope; reusing the friendly ID for another workspace creates a new one. Workspace moves/renames need explicit migration, not heuristic merging.</dd>
+      <dt><strong>Task</strong></dt><dd>A protocol unit of work with exactly one owning agent, immutable task ID, optional context ID, current A2A snapshot, timestamps, and a terminal outcome. It can have activity on several days. Revision/retry after a terminal outcome creates another task with a relationship to its origin.</dd>
+      <dt><strong>Session</strong></dt><dd>A physical SDK conversation for one agent, with identity, day assignment, actual start/end, and split reason. A new session means creating a new SDK conversation, not slicing an existing transcript. Tasks and sessions are separate entities.</dd>
+      <dt><strong>Task/session association</strong></dt><dd>A task's actual execution interval or segment linked to the selected session. Allow multiple associations instead of assuming every task permanently fits in one day/session. The minimal implementation writes one association when the service acquires its turn gate and selects the SDK session.</dd>
+      <dt><strong>Task relationship</strong></dt><dd>A typed link such as delegated-to, transferred-to, retry-of, or refinement-of. Reference both owning agent identity and task ID, plus remote endpoint identity when needed. External task status is an observation, never something this store authoritatively updates.</dd>
+      <dt><strong>Daily summary / memory</strong></dt><dd>Derived knowledge owned by the agent, independent of a particular session, with source links, interval, version, and coverage watermark. Synthesize decisions, commitments, unresolved questions, and useful discoveries, rather than only shortening the transcript. These are revisable interpretations, not authoritative facts or authorization to continue an old request.</dd>
+    </dl>
+    <p>A router can complete its task with a routing outcome and link to the specialist task. This transfers user-facing accountability, not ownership of the original task object. A delegating entry agent retains its own task and synthesizes the results of related tasks. A conference does not give participants permission to update each other's task state.</p>
+    <p>A shared context ID can correlate tasks; it neither proves parentage nor uniquely identifies a saga. Store explicit relationships. Initial persistence may reserve that model without introducing new public protocol fields or implementing routing.</p>
+  </section>
+
+  <section id="storage">
+    <h2>5. Recommended persistent ledger</h2>
+    <p>Use one local SQLite database at <code>&lt;host-state&gt;\history.db</code>, logically partitioned by durable agent identity. The combined name anticipates both task and session records. The first delivery adopts SQLite for tasks, retained owner scopes, transactional transitions, known-auth filtering, and crash reconciliation; session tables below are still proposed. SQLite's <a href="https://sqlite.org/appfileformat.html">application-file documentation</a> supports structured local state with transactional updates.</p>
+    <p>A host-wide database is simpler for atomic task/session binding and cross-agent relationship queries. It differs from the note's per-agent-folder vision: the workspace stays the agent's knowledge boundary, while private execution history stays outside its repository. Agent-specific export can later provide portable archives without writing live ledgers into Git or synced knowledge folders.</p>
+    <div class="table-wrap">
+      <table>
+        <caption>Logical schema, not final SQL or a migration contract</caption>
+        <thead><tr><th>Entity</th><th>Essential fields / constraints</th></tr></thead>
+        <tbody>
+          <tr><td><code>agents</code></td><td>History-scope key; friendly ID; canonical workspace identity; display snapshots; archived/unregistered state. Catalog membership is not part of the history key.</td></tr>
+          <tr><td><code>tasks</code></td><td>Owner key + task ID; context ID; sanitized complete A2A snapshot; created/updated/completed UTC; durable state; revision; schema version. Index owner/date/state.</td></tr>
+          <tr><td><code>task_transitions</code></td><td>Owner/task; monotonic sequence; state; observed UTC; sanitized public message; reason and stable event identity when available. Append-only within the retention period.</td></tr>
+          <tr><td><code>sessions</code></td><td>Session key; owner; SDK ID; start/end UTC; nullable assigned local day for legacy sessions; timezone/cutoff policy revision; ordinal; split reason; active/closed/unavailable status; history coverage. Each record identifies a physical SDK conversation.</td></tr>
+          <tr><td><code>task_sessions</code></td><td>Owner/task; session key; segment identity; execution start/end UTC. Durable binding before SDK submission. No arbitrary caller-supplied association.</td></tr>
+          <tr><td><code>task_links</code></td><td>Source and target owner/task references; relation; recorded time; observed remote state. Optional until coordination work is implemented.</td></tr>
+          <tr><td><code>history_messages</code></td><td>Filtered user/assistant messages with owner, task/session association where known, UTC, ordinal/source ID, and provenance. Capture incrementally; do not assume the SDK's full event payload is safe to archive.</td></tr>
+          <tr><td><code>daily_summaries</code></td><td>Owner/day/policy; summary version; source-record references; generation metadata; coverage watermark; complete/incomplete/stale state. Separate from authoritative task counts.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>5.1 Write and observation contract</h3>
+    <p>Implement the pinned A2A <code>ITaskStore</code> contract first, verifying every method and serialization field against the installed package. Preserve messages, artifacts, metadata, paging, filters, and terminal-state rules. Write a snapshot plus any state transition in a single database transaction. Persist acknowledgements before exposing them to callers; verify the A2A notifier's actual ordering instead of assuming the interface alone guarantees this.</p>
+    <p>Use revision/sequence checks so duplicate persistence calls do not append duplicate transitions or undo terminal states. Messages and artifact changes can update the snapshot without generating an artificial state transition. No full event-sourcing framework or promise of replaying every historical SSE frame is needed.</p>
+    <p>Choose local-disk transactions, a bounded busy timeout, explicit schema migrations, and a durability setting tested for the intended crash guarantee. Consider WAL for overlapping readers/writers, but keep its live files on local disk and use SQLite's backup API for consistent backups; see <a href="https://sqlite.org/wal.html">WAL documentation</a> and <a href="https://sqlite.org/backup.html">Online Backup API</a>. Do not copy a live main database alone or place its WAL files in OneDrive/network storage.</p>
+    <p>A failed write must not be reported as a successful durable completion. Stop admitting new work when the ledger is unavailable, surface an explicit storage failure, and log the condition. There is no atomic transaction across SQLite and an external command: a crash after a side effect but before its completion record leaves an unknown outcome. This limitation rules out blind replay.</p>
+    <h3>5.2 Relationship to SDK storage</h3>
+    <p>SQLite is authoritative for RepoYak task state, session associations, and its sanitized history archive. SDK persistence remains responsible for runtime conversation resumption. A missing SDK transcript must not erase task results. Conversely, an SDK transcript is not proof that a task reached durable Completed.</p>
+    <p>For historical sessions, use only recorded RepoYak-owned SDK IDs. Evaluate <code>GetEventsAsync</code> on disposable sessions after resume and after disposal/restart. Extract an allowlisted user/assistant projection into the ledger with stable source identities; do not import raw OAuth/tool events. Treat historical backfill as optional and coverage-labeled, not a prerequisite for returning task snapshots.</p>
+  </section>
+
+  <section id="sessions">
+    <h2>6. Session registry, days, and rotation</h2>
+    <h3>6.1 Addressing and user-local time</h3>
+    <p><strong>Rollout control:</strong> persisted <code>defaultSessionMode</code> accepts <code>single</code> or <code>daily</code>, selected by startup <code>--default-session-mode</code>. An agent can override it through registration <code>--session-mode</code> or its saved <code>sessionMode</code>. The initial default is single. Daily settings are validated and retained but do not enable rotation before synthesis/recall exists; management reports effective single mode and startup warns about the reserved policy.</p>
+    <p>The conceptual day address is <code>(agent-history-key, day-policy, local-date)</code>. It resolves to an ordered collection of sessions; an empty day is valid. A specific session adds an immutable session ID and ordinal. URLs and SDK IDs need not encode that structure, and no new client syntax is required to ask about Wednesday.</p>
+    <p>For the current local profile, use one explicitly configured operator timezone/cutoff policy inherited by agents. Do not infer a different user identity or timezone from unauthenticated callers. Initialize the policy from the local operator's timezone and a midnight cutoff as a proposed default; a 4 a.m. workday cutoff is configurable, not silently imposed by this note.</p>
+    <p>Construct each interval from local civil-time boundaries and convert those instants to UTC. Do not assume days last 24 hours or subtract four elapsed hours across daylight-saving transitions. Define deterministic handling for nonexistent/ambiguous cutoff times (advance through a gap; choose the earlier occurrence during a fold) and test the supported Windows/macOS timezone mapping.</p>
+    <p>Persist UTC event times plus the timezone/cutoff/policy revision used for session day assignment. Policy changes affect future assignments, not old labels. Query responses show absolute interval, timezone, and calendar-day or workday mode. Ordinary "Friday" means the calendar date unless the caller requests the configured workday; clarify ambiguous relative dates rather than silently choose a surprising interval.</p>
+    <h3 id="boundary">6.2 Physical daily conversations with flexible boundaries</h3>
+    <aside><strong>Decision recorded, 22 November 2026:</strong> daily sessions are physical SDK conversations. They do not have to map exactly to midnight-to-midnight intervals. Use option A below; logical history slices are not sessions, and the clock does not force interruption of an active turn.</aside>
+    <aside><strong>Design rationale recorded, 27 November 2026:</strong> the day is a human-aligned working-context boundary. During today's conversation, the user expects the agent to retain the context of earlier exchanges today without explicitly recalling each one. At day's end, review that working context and synthesize durable memories; the next day's fresh conversation retrieves relevant memories rather than inheriting the full transcript. This is the intended compaction cycle, not a claim about human cognition or a guarantee of unlimited SDK context.</aside>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Option</th><th>Behavior and cost</th></tr></thead>
+        <tbody>
+          <tr><td>A. Rotate physical sessions between tasks &mdash; selected</td><td>Lazy daily rotation before the next new task after the assigned day changes. Finish a pending turn in its existing SDK session and attribute messages to their real dates. A session can span the boundary; its assigned day is a navigation label, not a claim that all its activity occurred on that day.</td></tr>
+          <tr><td>B. Day-contained logical history slices &mdash; not selected</td><td>Split recorded history without creating a new SDK conversation. Date-based projections may still be useful for queries, but they are not session identities or session rotation.</td></tr>
+          <tr><td>C. Force physical cutoff</td><td>Cancel/checkpoint the active turn and start a new SDK session. Current callbacks and side effects are not safely checkpointable, so this risks lost work, unnecessary failure, and duplicate execution. Not recommended without a separate durable execution design.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Proposed execution policy:</strong> assign a new physical session to the configured local day when its first task begins. Before each subsequent new task, after acquiring the agent's turn gate, compare that day's assignment with the current day. If it differs, create a fresh SDK conversation before executing the task. Continuations of pending input/authentication remain in the existing turn and session, even across the boundary. An idle session need not be closed by a midnight timer; rotate lazily when new work arrives. This is a day-based policy, not a maximum elapsed lifetime of 24 hours.</p>
+    <p>Find Wednesday's work by actual task/message activity during Wednesday's resolved interval, including a conversation assigned to Tuesday that continued into Wednesday. Return the physical sessions containing those matches. The assigned day groups newly started conversations; it must not exclude activity on adjacent dates. Session history records both assignment and actual activity range.</p>
+    <p>A task accepted before the cutoff but queued behind another turn binds to the session actually selected when execution begins. Creation date, activity date, and completion date remain independent. An idle agent creates no empty daily session; "at least one per day" means each day on which work executes.</p>
+    <p>Keep same-day turns in the existing conversation by default. A day may still contain several physical sessions after an explicit split or a recoverable lifecycle event; daily synthesis reviews all recorded activity in that day's interval, not just one session. The SDK can still compact its own context within a conversation. Daily rotation is a deliberate longer-lived context boundary, not a substitute for runtime context management.</p>
+    <h3>6.3 Further splits and continuity</h3>
+    <p>Allow explicit user rotation and future agent-requested splits for idle gaps, topic shifts, or context pressure. Accept splits only between turns, with a recorded reason and previous/next linkage. No hard idle threshold or token limit is adopted here. Defer the agent-requested rotation tool until the registry and retrieval mechanism exist.</p>
+    <p>A fresh session is a real context cut: no automatic transcript copying or hidden replay. Normal workspace grounding, persona, and tool configuration still apply. Pair daily rotation with a bounded, host-controlled memories-first recall policy: at the first new turn, provide relevant prior-day memories as attributed historical context, with coverage indicators and source references. The new request determines relevance; neither the prior transcript nor every accumulated memory is copied wholesale. Exact selection, context budgets, and operator controls remain implementation decisions.</p>
+    <p>Daily rotation and synthesis/recall form one designed feature. Persistence may ship first, but automatic daily rotation should not ship alone and make yesterday's useful context inaccessible. Read-only model tools should support bounded agent-scoped history search and retrieval of referenced task/session records; tool names and schemas remain to be defined. They read sanitized history without resuming historical SDK conversations, exposing arbitrary SQL, or authorizing unfinished work.</p>
+    <p>Session rotation must record the prepared session, validate persona/configuration, then atomically switch the ledger's active reference before admitting another turn. Creation and database commit cannot be atomic with the SDK: record recoverable preparation/orphan states, keep the previous reference until commit succeeds, and never silently replace a failed resume with a new conversation.</p>
+    <p>Local MCP tokens are currently in-memory per loaded SDK session. More frequent physical rotation can require more sign-ins. Do not change token persistence, introduce OBO, or pretend logical history slices have independently authenticated runtimes as a side effect of this feature.</p>
+  </section>
+
+  <section id="recovery">
+    <h2>7. Restart, migration, and lifecycle</h2>
+    <p>Persisted history survives restart, unregistering, and rotation. Removing catalog membership changes navigation only. Unregistering stops the agent but retains its history; explicit history deletion is a distinct authorized operation. A future archive/revive feature can reuse that separation.</p>
+    <p>At startup, reconcile tasks left Submitted, Working, InputRequired, or AuthRequired by the previous process. Without durable execution resumption, transition them to Failed with a public interruption explanation and an internal outcome-unknown reason. Preserve prior states/messages and any partial artifacts; do not reopen a terminal task or replay commands. Canceled tasks remain canceled even if a late callback or stale writer arrives.</p>
+    <p>On graceful shutdown, apply the existing cancellation semantics and commit final states before closing the store. After a crash, failure denotes that RepoYak cannot establish completion, not proof that every external action failed. A fresh retry must be explicit and can link to the interrupted task.</p>
+    <p>Import the existing <code>active-session.txt</code> as a legacy session record with unknown day and coverage where metadata cannot establish them. Do not assign a multi-day legacy conversation to today's day or manufacture old tasks from transcript text. Keep the pointer readable during migration, designate the database as authoritative only after a verified import, and make the import idempotent. SDK metadata/backfill can later refine provenance without claiming complete pre-upgrade task history.</p>
+    <p>Session closure, host shutdown, SDK unavailability, and archival are distinct states. A closed historical session is not automatically a deleted SDK transcript. Failure to retrieve it should report unavailable/partial coverage while preserving the ledger's task archive.</p>
+  </section>
+
+  <section id="recall">
+    <h2>8. Retrieval, daily summaries, and analytics</h2>
+    <p>Existing A2A task-get/list operations should return historical records through the persistent store. Date-aware session lookup and recall can be host-internal APIs/tools initially; do not extend A2A with invented session semantics. A read-only history tool should accept bounded agent-scoped date ranges, state/activity filters, and optional text terms. Return stable record references and paging, not arbitrary SQL access.</p>
+    <ol>
+      <li>Resolve natural-language time to an explicit interval and calendar/workday policy.</li>
+      <li>Search that agent's daily summaries, then matching task messages, artifacts, and session message projections.</li>
+      <li>Fetch supporting records for each candidate; show source task/session/day references, including partial coverage.</li>
+      <li>For analytics, query authoritative timestamps/state. Summaries may explain the count, never determine it.</li>
+    </ol>
+    <p>For an agent-specific completed-task count, count distinct owner/task pairs completed during the interval. Activity queries include messages/transitions during the interval even for tasks created earlier. For multi-agent reports, provide separate counts for all executions and primary user outcomes; delegated tasks and completed routing tasks are not automatically additional delivered outcomes. Related-task links alone are insufficient to infer acceptance.</p>
+    <h3>8.1 Daily working-context to memory cycle</h3>
+    <ol>
+      <li><strong>During the day:</strong> retain the physical conversation across turns, preserving normal same-day context. Persist sanitized task and conversation evidence incrementally.</li>
+      <li><strong>After the day boundary:</strong> review the day's recorded activity across all contributing sessions and synthesize decisions, commitments, unresolved questions, and useful discoveries. Distinguish user statements, observed results, and model inferences; preserve uncertainty and source references.</li>
+      <li><strong>At the next day's first new turn:</strong> start a fresh physical conversation and supply a bounded selection of relevant synthesized memories. Expose read-only history tools so the model can verify details or retrieve other dates when needed.</li>
+      <li><strong>As evidence changes:</strong> revise or supersede memories when later work resolves a question or contradicts an earlier interpretation. Retain provenance and avoid treating repeated summaries as independent evidence.</li>
+    </ol>
+    <p>Make daily summaries versioned and traceable to their inputs and generation policy; do not require identical model prose on regeneration. Generate after the cutoff, either by a scheduled job or lazily at the next activity, with a source watermark and incomplete marker for spanning tasks. Do not interrupt an active turn to synthesize it or await a pending input/authentication callback. Regenerate or invalidate when late records arrive. Activity after the boundary is searchable under its real date even when the physical conversation started the previous day.</p>
+    <p>If the host was stopped overnight, perform a bounded catch-up synthesis attempt before admitting the next day's first new turn. Run synthesis outside the active task's conversation, without side-effecting tools or authority to execute commitments. Exact scheduling, inference budgets, and controls remain open. Derivation failures must not block durable task writes or indefinitely block new work: mark memory coverage incomplete, admit the task with an explicit coverage limitation, and retain source-based recall as a fallback. Durable task state and deterministic analytics remain authoritative.</p>
+    <p>Summarization may incur inference cost and expose source content to the configured inference service. Keep it bounded, policy-controlled, and separate from arbitrary tool execution. Do not run a summarizer inside the active task's SDK turn, pollute that conversation, or silently grant it permission to carry out unfinished tasks. Synthesized memories are revisable historical context, not trusted instructions or proof that a commitment was completed. Cross-day consolidation into longer-term memory remains a separate, provenance-aware feature.</p>
+    <p>Start with metadata and text queries. Embeddings, cross-agent memory synthesis, and proactive recall beyond the bounded next-day grounding policy are later choices. Daily memory grounding belongs to the combined daily compaction stage, not the initial task archive. An agent's topic boundary is a useful retrieval scope, not a security boundary.</p>
+  </section>
+
+  <section id="privacy">
+    <h2>9. Privacy, retention, and portability</h2>
+    <p>Persistent task history newly makes user requests, results, and artifacts durable. Store it in private host state, not the source repository. Do not present local SQLite as encryption or per-caller access control; all current trusted local callers of an agent share its history. Hosted multi-user storage needs a separate authenticated identity/authorization design.</p>
+    <p>Persist sanitized public messages and explicitly allowlisted session text. Strip temporary authorization URLs from both text and structured AuthRequired messages, discard codes/tokens/client secrets/raw auth events, and retain only a generic sign-in-needed marker and nonsecret server identity. Apply the same filter to task snapshots, transitions, history projections, exports, and summaries. Arbitrary user-pasted secrets cannot be eliminated reliably by a general redactor; documentation and deletion tools remain necessary.</p>
+    <p>No silent automatic expiry is proposed initially. Provide explicit agent/task/date-range deletion and export with clear scope and confirmation, including derived summaries and any search indexes. Mark summaries stale or regenerate them after source deletion. Document that deleting RepoYak history does not automatically delete SDK transcripts, backups, workspace artifacts, or effects in external services; coordinated deletion should be a separate explicit choice.</p>
+    <p>Exports should carry versioned schema, agent identity, UTC/time policy, tasks, session associations, sanitized messages, coverage, and source relationships. A future per-agent folder archive can meet the note's portability goal without coupling live storage to catalog layout. Backup/restore must preserve the host/history identity and prevent a copied archive from accidentally joining another active execution ledger.</p>
+  </section>
+
+  <section id="delivery">
+    <h2>10. Delivery sequence and acceptance tests</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Stage</th><th>Deliverable</th><th>Evidence required</th></tr></thead>
+        <tbody>
+          <tr><td>1. Durable task archive</td><td>SQLite task store, transactional transitions, migrations, secret filtering, retained owner scopes, crash reconciliation. Keep existing session policy.</td><td>Restart returns the same completed task/messages/artifacts; interrupted input/auth tasks fail truthfully; no automatic side-effect replay; terminal states resist stale writes; task-store filters/paging match baseline; storage failures do not falsely acknowledge completion.</td></tr>
+          <tr><td>2. Session history registry</td><td>Import current pointers; record every created/resumed/rotated physical session and actual task binding; archive a sanitized conversation projection with coverage labels.</td><td>Re-registration preserves the scope; friendly-ID reuse cannot merge workspaces; rotation retains history; missing SDK history does not erase task results; preparation/commit crashes recover; unrelated SDK sessions are never imported.</td></tr>
+          <tr><td>3. Time-addressable recall</td><td>User-local interval policy, read-only model history tools, task/session history search, and deterministic completion/activity queries. Establish source-linked, coverage-aware retrieval before daily rotation.</td><td>Yesterday/Wednesday/Friday examples cite durable records; DST, 4 a.m., timezone changes, empty days, queued turns, midnight completion, and duplicate observations are correct; tools enforce agent scope and do not resume historical sessions; summaries are not used as counting authority.</td></tr>
+          <tr><td>4. Daily compaction cycle and further splits</td><td>Ship lazy physical daily rotation together with versioned end-of-day memory synthesis, bounded next-day memory grounding, and history fallback. Reasoned agent-requested intra-day splits can follow.</td><td>Same-day turns retain their conversation; pending input/auth across midnight stays in its original conversation; the next new task starts a fresh one with relevant attributed memories, not a copied transcript. Catch-up works after overnight shutdown; late activity revises coverage; failed synthesis does not indefinitely block new work; memory cannot execute commitments or falsify counts; increased sign-in frequency is documented/tested.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Also test concurrent agents, same server names across sessions, deletion of source records and derived summaries, sanitized exports, backup/restore, repeated migration, disk-full/busy/corrupt-store behavior, and A2A synchronous/streaming/subscription ordering. Use disposable local state and fake inference; native SDK history tests must not inspect real private sessions or require live user credentials.</p>
+    <p>Update the implementation specification, host contract, consumer skill, and package verification only as each behavior ships. The first implementation now covers the durable task archive and rollout settings; session indexing, date tools, daily compaction, and public export/deletion remain future deliveries. The running installed host has not been upgraded by these source changes.</p>
+  </section>
+
+  <section id="decisions">
+    <h2>11. Decisions for review</h2>
+    <ol>
+      <li><strong>Storage placement:</strong> accept a host-wide private SQLite ledger with agent-scoped export, or prefer live per-agent ledgers for portability?</li>
+      <li><strong>Resolved &mdash; meaning of session:</strong> a physical SDK conversation, with flexible daily boundaries. Rotate between tasks, not forcibly at midnight; do not create logical slice identities as sessions.</li>
+      <li><strong>Resolved &mdash; daily context lifecycle:</strong> daily sessions are the user's working-context boundary, paired with end-of-day synthesis and next-day recall of source-linked, revisable memories. Design and ship rotation with memory continuity rather than as an isolated reset; persistence can still ship first.</li>
+      <li><strong>Day policy:</strong> midnight calendar day as default, or an explicit workday cutoff such as 4 a.m.? Decide default query semantics and travel/timezone-change behavior.</li>
+      <li><strong>History coverage:</strong> is a durable public task archive plus user/assistant projection sufficient, or is a broader raw runtime archive required? A broader archive needs a separate privacy/retention design.</li>
+      <li><strong>Memory policy details:</strong> choose scheduled versus lazy synthesis, bounded catch-up/retry behavior, operator controls, relevance selection, context budgets, and correction/supersession behavior. Bounded next-day memory grounding and read-only model recall are the design direction; raw transcript carry-forward and automatic execution of commitments are not. Costs and confidentiality apply independently of persistence.</li>
+      <li><strong>Retention and identity migration:</strong> keep until explicit deletion, and require explicit history-scope migration for workspace moves? Define whether archival hides discovery without stopping execution.</li>
+    </ol>
+    <p>The imported note's questions about saga failure/retry/compensation, conference ownership, router bottlenecks, effortless agent creation, and cross-agent memory remain valid. Preserve room for them without making durable task storage depend on solving orchestration.</p>
+  </section>
+
+  <section id="references">
+    <h2>12. Evidence and references</h2>
+    <ul>
+      <li><a href="../design-notes/agents-tasks-and-sessions.md">Imported design note</a> &mdash; source text, preserved without editorial changes.</li>
+      <li><a href="../specification.html#tasks">Implemented task contract</a>, <a href="../specification.html#sessions">session continuity</a>, and <a href="../specification.html#local-authentication">local MCP authentication</a> &mdash; current constraints, not proposed persistence.</li>
+      <li><a href="../../src/RepoYak.Api/AgentRegistry.cs">AgentRegistry</a>, <a href="../../src/RepoYak.Api/CopilotAgentService.cs">CopilotAgentService</a>, <a href="../../src/RepoYak.Api/RepositoryAgentHandler.cs">RepositoryAgentHandler</a>, and <a href="../../src/RepoYak.Api/InputAwareA2AServer.cs">InputAwareA2AServer</a> &mdash; inspected integration seams.</li>
+      <li><a href="../../src/RepoYak.Api/RepoYak.Api.csproj">Pinned dependency versions</a> &mdash; SDK 1.0.28 historical APIs verified against installed XML contracts, not unverified assumptions about upstream main.</li>
+      <li><a href="https://a2a-protocol.org/v1.0.0/specification/">A2A specification version referenced by RepoYak</a> and <a href="https://a2a-protocol.org/latest/topics/life-of-a-task/">current task-lifecycle explanation</a> &mdash; terminal-task immutability and correlation; pin the installed package's actual behavior before implementation.</li>
+      <li><a href="https://www.ietf.org/archive/id/draft-rosenberg-aiproto-framework-00.html#section-2.3">Rosenberg/Jennings draft-00, section 2.3</a> &mdash; five interaction patterns, historical work in progress. This proposal's task ownership mapping is its own interpretation.</li>
+      <li><a href="https://ai-catalog.io/spec/">AI Catalog specification</a> &mdash; retrieved release-candidate status/nesting, not a claim of existing RepoYak nested-catalog support.</li>
+      <li><a href="https://sqlite.org/appfileformat.html">SQLite application-file rationale</a>, <a href="https://sqlite.org/wal.html">WAL</a>, and <a href="https://sqlite.org/backup.html">Online Backup API</a> &mdash; storage design references, not new adopted dependencies.</li>
+    </ul>
+  </section>
+  <footer>Draft for review &middot; Updated 27 November 2026 &middot; <a href="#source">Source provenance</a></footer>
+</main>
+</body>
+</html>

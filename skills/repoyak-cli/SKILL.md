@@ -216,8 +216,11 @@ $env:REPOAGENT_ALLOWED_ROOTS = "C:\agents;D:\knowledge"
 repoyak start
 ```
 
-Set the same port in the control-command terminal. Current workspaces must be local Git
-repositories; URL cloning is not implemented. Paths through junctions/symbolic links are rejected.
+Set the same port in the control-command terminal. Workspaces must be existing local folders;
+Git is optional and detected from a `.git` file or directory at the workspace root. Agents use
+Git freshness checks only when that metadata is present; otherwise they use current local files.
+Do not initialize Git merely to register a folder. URL cloning is not implemented.
+Paths through junctions/symbolic links are rejected.
 
 ### Named catalogs and explicit configuration
 
@@ -324,15 +327,59 @@ Completed follow. Do not count a status message as a new task or a completed res
 events and raw tool data are not exposed. Token-by-token result artifact deltas are not implemented.
 For a single final response object, omit `--stream` and use `-o json` as above.
 
-To continue an existing nonterminal task:
+When the task reaches `INPUT_REQUIRED`, show its status message to the user and reply to the
+same agent and task. The SDK turn is paused, not failed or completed:
 
 ```powershell
-a2a send -a $agent --transport rest --stream --task-id $taskId --context-id "caller-topic" "Here is the clarification."
+a2a send -a $agent --transport rest --stream --timeout 5m --task-id $taskId "Here is the clarification."
 ```
 
 A revision after completion is a **new task**, optionally in the same caller context. Do not reuse
-a terminal task ID. Input-required/approval bridging is not implemented by this host; do not
-promise it based solely on the CLI's capabilities.
+a terminal task ID. Input replies resume the original turn and may produce another input request.
+Do not start a new task to answer a pending question.
+
+The input status message contains question text and a JSON data part with `requestId`, `kind`,
+`choices`, `allowFreeform`, `requestedSchema`, and `url`. Use the choices when freeform is disabled.
+For an elicitation form, send the response JSON as text:
+
+```powershell
+a2a send -a $agent --transport rest --stream --timeout 5m --task-id $taskId `
+  '{"requestId":"<pending-request-id>","action":"accept","content":{"project":"RepoYak"}}'
+```
+
+Use the actual schema and request ID, not those placeholder field names. `decline` or `cancel`
+can be sent as plain text for elicitation; `accept` can acknowledge URL-based elicitation after
+the user completes the browser interaction. Never open a URL or claim consent on the user's
+behalf. Ordinary questions accept plain-text answers; API clients can use a data part containing
+`answer` and optionally `requestId`. Including the ID rejects stale replies.
+
+The ten-minute turn timeout includes waiting for input. Cancel with `a2a task cancel` to abort
+the waiting turn; answer or cancel pending input before `/new-session`. Pending input does not
+survive host restart. Do not send secrets in replies. Tool permissions are still automatically
+approved; this is input bridging, not permission-approval or caller-authentication support.
+
+### Local MCP sign-in
+
+When a task reaches `AUTH_REQUIRED`, present its sign-in instructions and `authorizationUrl`
+from the status message's data part (`kind: "local_mcp_oauth"`, with `serverName` and `requestId`).
+The user must open the URL in a browser **on the RepoYak machine**. Do not open it or consent on
+their behalf. The runtime receives the loopback callback and confirms the MCP connection; the
+original task then resumes automatically. Poll or resubscribe rather than sending "signed in"
+or an `accept` reply:
+
+```powershell
+a2a task get -a $agent --transport rest $taskId -o json
+```
+
+Never ask for tokens, authorization codes, or callback URLs. A browser page or chat reply does not
+prove authentication. Cancel the task if sign-in is declined/abandoned; some provider denials
+remain pending until cancellation or the ten-minute turn timeout. Complete or cancel sign-in
+before `/new-session`. Pending auth and in-memory MCP tokens do not survive restart/rotation.
+
+The receiving agent has an `authenticate_mcp` tool to inspect connection states and start sign-in
+for an enabled configured server needed for the task. This supports runtime-managed HTTP MCP
+OAuth whose client permits a loopback redirect, not arbitrary stdio login or hosted/OBO flows.
+It does not authenticate the A2A caller or isolate credentials between callers of the same agent.
 
 ## Sessions are separate from tasks
 
@@ -348,9 +395,23 @@ a2a send -a $agent --transport rest "/new-session"
 
 This control and empty requests return plain Messages, not Tasks. Rotate only on an explicit user
 request: it discards active conversational continuity. Saved sessions resume across host restart,
-but A2A task records are in-memory and disappear on restart or unregistering. Save results
-externally when durable accountability is needed. Completion means execution finished, not that
+and A2A task records persist by default in `<host-state>\history.db`, scoped to the host/agent/workspace
+binding. Records survive unregister/re-register of that binding and session rotation.
+Completion means execution finished, not that
 the caller accepted the outcome.
+
+Use `repoyak start --no-persistent-tasks` only when volatile task records are intended. It saves
+`persistentTasks: false` in host config and leaves existing history untouched. To re-enable, stop,
+set that JSON field to true, and restart. No old in-memory tasks can be recovered.
+Interrupted tasks become Failed after restart, preserving partial results and an outcome-unknown
+explanation. Never automatically retry or replay them.
+
+`start --default-session-mode single|daily` saves the host default; `add --session-mode single|daily`
+saves an agent override. `daily` is reserved until daily synthesis/recall ships: list reports the
+requested `sessionMode`, but `effectiveSessionMode` remains `single`, with a startup warning.
+Do not promise daily rotation, generated memories, or model history-recall tools yet.
+Task archives filter known local MCP auth details, not arbitrary pasted secrets; keep live ledgers
+on local disk. Storage failures block new work until repair/restart. Export/deletion UI is not yet provided.
 
 ## Safety
 
@@ -367,7 +428,9 @@ servers may launch local commands or contact external services under the host ac
 repository and configured servers. Their tool calls are automatically approved without per-call
 confirmation. Authentication and managed policies still apply. Repository
 MCP configuration requires Copilot folder trust; registration does not bypass it. Repository file
-hooks remain disabled. Restart the host to apply configuration changes to loaded sessions.
+hooks remain disabled. CLI extensions are disabled because the bundled standalone runtime has no
+extension launch provider, including when the user's Copilot settings enable experimental mode.
+Restart the host to apply configuration changes to loaded sessions.
 
 Installation references:
 <https://github.com/Agent-Card/ai-catalog-cli#install> and

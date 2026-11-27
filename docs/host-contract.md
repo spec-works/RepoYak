@@ -94,8 +94,81 @@ selector. A completed-task revision is new work, not a continuation of a termina
 
 Execution emits Submitted, Working, public assistant updates as Working status messages, a final
 result artifact, and Completed. Completion means execution finished, not caller acceptance.
-Reasoning and raw tool data are not forwarded. Token-by-token artifact deltas and interactive
-input/approval bridging are not implemented.
+Reasoning and raw tool data are not forwarded. Token-by-token artifact deltas are not implemented.
+
+SDK user-input and elicitation callbacks emit `InputRequired` on the original task. Its status
+message includes human-readable question text and a JSON data part with `requestId`, `kind`,
+`question`, `choices`, `allowFreeform`, `requestedSchema`, and `url`. Synchronous sends and streams
+return at this boundary. The SDK turn remains alive; a reply addressed to the same agent and task
+resolves its pending callback rather than starting another turn. The task then returns to Working
+and can request more input before completing. Replies to tasks not awaiting input are rejected.
+
+Question-and-answer replies can be plain text or a data part containing `answer`. Form replies
+use `{"action":"accept","content":{...}}`, `{"action":"decline"}`, or `{"action":"cancel"}`.
+The same JSON can be sent as text for CLI form replies; plain `decline` and `cancel` also work.
+Accepted forms require an object with the requested required fields. The schema is forwarded to
+clients, not replaced with a full host-side JSON Schema validator. Include `requestId` in data
+replies to guard against answering a superseded question. URLs are surfaced, never opened by the
+host; URL elicitation can be acknowledged with plain `accept`, `decline`, or `cancel`.
+
+Cancellation and host shutdown abort the waiting SDK turn. The existing ten-minute turn timeout
+includes time waiting for input, and a timeout still transitions the task to Failed. Pending input
+is in memory and does not survive restart. Answer or cancel pending input before `/new-session`.
+This does not add caller authentication or change automatic tool permission approval. Do not send
+credentials or secrets in input replies, which are part of the task's history.
+
+### Local MCP authentication
+
+RepoYak currently implements the **local personal-agent** deployment profile: a trusted local
+caller invokes a user-operated agent, which obtains delegated MCP credentials through an interactive
+browser sign-in. It does not need an inbound OAuth/OBO chain. A **hosted delegated-agent** profile
+would require authenticated/authorized callers, user/tenant isolation, and delegated token exchange
+such as OBO with the required registration and tenant consent. That profile is not implemented.
+
+Each SDK session includes `authenticate_mcp`. With no `serverName` it passively lists configured
+names, enablement, and observed connection states, without exposing configuration secrets. With
+an exact enabled server name, it starts that configured server if necessary and, when `needs-auth`,
+calls the runtime's OAuth login API using the authorization-code grant and default loopback callback.
+It does not register a host-managed-token `OnMcpAuthRequest` handler, receive tokens, or prompt for
+unrelated MCPs before each task. Agent instructions direct use of this tool when a needed MCP
+requires sign-in.
+
+While the selected server awaits sign-in, the original task emits `AuthRequired`. Synchronous sends,
+streams, and subscriptions return at this boundary, leaving execution alive. The status includes
+human-readable instructions and exactly this data shape:
+
+```json
+{
+  "requestId": "<opaque-pending-request-id>",
+  "kind": "local_mcp_oauth",
+  "serverName": "<configured-MCP-name>",
+  "authorizationUrl": "<runtime-provided-browser-sign-in-link>"
+}
+```
+
+The caller presents the URL without opening it automatically. The user must use a browser on the
+RepoYak machine. The runtime owns OAuth discovery, PKCE, the loopback listener, code exchange, and
+MCP reconnection. Its matching session/server `connected` event, not a chat acknowledgement,
+confirms completion. Then the original task returns to Working and continues the same SDK turn.
+Poll or resubscribe to that task; do not send a work-message continuation. Tokens, authorization
+codes, callback URLs, raw challenges, and client secrets are not requested in A2A messages or
+returned by the authentication tool to the model.
+
+Sign-in and ordinary input are serialized, late progress cannot obscure the pending state, and
+`/new-session` is blocked while either is pending. Cancellation, host shutdown, and the ten-minute
+turn timeout release the wait and attempt to stop the selected MCP server, closing its login listener
+in the bundled runtime. Cleanup is bounded to five seconds. A late callback cannot complete a
+canceled A2A task. If the provider rejects sign-in without a terminal runtime failure event, the
+task can remain `AuthRequired` until canceled or timed out; do not interpret a browser callback
+page as proof that the MCP connected. Other authentication-tool failures return a generic diagnostic
+to the model, which can explain the limitation without disclosing provider responses.
+
+OAuth tokens use explicit in-memory SDK storage. They can be reused by subsequent tasks in the
+same loaded session, not by a new session after restart/rotation. This is not caller credential
+isolation: every trusted local caller can use the agent's connected MCPs. The configured OAuth
+client must support the runtime's loopback redirect; fixed incompatible redirects are not bypassed.
+Arbitrary interactive authentication performed internally by a stdio MCP is not intercepted.
+Hosted callbacks, inbound A2A authentication, OBO, and tenant approval remain outside this implementation.
 
 Each agent owns one receiving Copilot session with serialized turns. Separate agents can run
 concurrently on a single host-owned runtime. The runtime starts lazily on first work or explicit
@@ -105,8 +178,43 @@ before work and rotation.
 
 `/new-session` explicitly creates fresh continuity and returns a Message. Empty requests also
 return Messages. Session IDs persist and are resumed; resume failures do not silently create new
-conversations. A2A task records are currently in-memory and do not survive restart or unregistering.
+conversations. A2A task records persist by default in `<host-state>\history.db`, independently of SDK
+transcripts. They survive restart, rotation, and re-registration of the same host/agent/workspace binding.
 Loaded sessions have no idle eviction; shared-runtime failure affects all hosted agents.
+
+### Durable tasks and policy controls
+
+The SQLite task store saves sanitized complete snapshots and state transitions in one transaction,
+with observed UTC timestamps and monotonic revisions. Duplicate saves do not duplicate transitions;
+terminal and stale snapshots cannot overwrite accepted results. Existing task-get/list filtering,
+pagination, history trimming, artifacts, and metadata remain supported. Durable mode explicitly
+records initial caller messages and input replies in task history.
+
+The owner scope hashes durable host identity, agent ID, and canonical workspace path; catalog
+membership and AIR entry identifiers do not select history. Unregistering retains records.
+Re-registering the same binding restores access; reusing the ID for another workspace does not.
+Startup reconciles unfinished records to Failed with an outcome-unknown explanation and preserves
+partial results. It does not reconstruct callbacks or replay work. Pre-upgrade lost tasks are not imported.
+
+`start --no-persistent-tasks` persists `persistentTasks: false`. That mode uses a separate in-memory
+store and never touches the existing ledger. To re-enable, stop, edit the JSON value to true, and
+restart. Defaults for absent fields are persistence enabled and `defaultSessionMode: "single"`.
+Startup CLI settings override saved settings and are forwarded to the background child.
+`--default-session-mode <single|daily>` selects the host default; `add --session-mode <single|daily>`
+stores an agent override. Daily is reserved and warns at startup; effective behavior remains single.
+Management views distinguish requested `sessionMode` from `effectiveSessionMode`.
+
+The pinned A2A implementation awaits storage before event notification. Storage failures terminate
+waiting observers and stop new admissions across the host; they never acknowledge a durable completion.
+Recovery requires storage repair and host restart. The ledger uses FULL synchronous transactions
+with a five-second busy timeout, schema version checks, and no connection pooling or automatic expiry.
+Keep it on local disk. It is not encrypted; inherited host-state filesystem permissions apply.
+
+Local MCP sign-in messages are archived as a generic marker and nonsecret server name, without
+temporary authorization links, codes, or token fields. Active callback snapshots remain in process
+memory for callers and do not survive restart. This is not reliable redaction of arbitrary pasted
+secrets. Public deletion/export controls, session indexing, and model history-recall tools remain
+future work; SDK transcript retention is separate.
 
 ## Trust boundary
 
@@ -115,6 +223,8 @@ approved under the host account. Agent/session separation is not an OS sandbox. 
 one agent share its history. Use only trusted local callers and workspaces.
 
 Optional allowed roots restrict registration. Paths through junctions/symlinks are rejected.
+An existing local folder is sufficient for registration. A `.git` file or directory at its root
+enables Git support; folders without Git metadata remain supported.
 Runtime discovery of supported Copilot configuration is enabled, including MCP server definitions;
 explicit host settings take precedence. The host does not exclude specific MCP server names.
 Repository MCP configuration is subject to Copilot folder trust; registration does not bypass it.
@@ -128,7 +238,9 @@ the configured inference runtime; only approved content should be hosted.
 ## Verification and publication
 
 The host prompt instructs agents to check repository freshness before relying on content and
-permits `git pull --ff-only` when the working tree is clean and the current branch has an upstream.
+permits `git pull --ff-only` only for workspaces with Git metadata, when the working tree is clean
+and the current branch has an upstream. Without Git metadata, agents use current local files and
+do not assume a branch or upstream, or initialize Git unless explicitly requested.
 It does not authorize forced synchronization, branch switching, merges, rebases, or hiding local
 changes. Update blockers and failures must be reported. This is agent guidance, not an automatic
 host startup pull or an enforced sandbox. External service calls are not categorically prohibited
